@@ -1,0 +1,29 @@
+name: Validate deployment
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "helm/tradingagents/**"
+      - ".github/workflows/*.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render chart
+        run: |
+          helm lint ./helm/tradingagents
+          helm template test ./helm/tradingagents > /dev/null
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha

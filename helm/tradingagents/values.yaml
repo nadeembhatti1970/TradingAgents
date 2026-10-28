@@ -1,0 +1,44 @@
+image:
+  repository: nadeembhatti/tradingagents
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# One CronJob run analyses every ticker with today's date.
+schedule: "30 13 * * 1-5"
+timeZone: Etc/UTC
+suspend: true
+concurrencyPolicy: Forbid
+backoffLimit: 0
+activeDeadlineSeconds: 7200
+
+run:
+  tickers: ["NVDA"]
+  analysts: "market,social,news,fundamentals"
+
+# Non-secret TRADINGAGENTS_* settings. Real-money trading requires
+# tradeMode: real and a non-zero maxBuyValue; both default to the safe values.
+config:
+  tradeMode: practice
+  maxBuyValue: "0"
+  extra: {}
+
+# Existing Secret holding the LLM provider keys and broker credentials,
+# e.g. OPENAI_API_KEY, ALPACA_API_KEY, ALPACA_SECRET_KEY.
+secrets:
+  existingSecret: tradingagents-secrets
+
+persistence:
+  enabled: true
+  size: 2Gi
+  storageClass: ""
+  existingClaim: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []

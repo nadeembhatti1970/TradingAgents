@@ -157,6 +157,40 @@ For local models with Ollama:
 docker compose --profile ollama run --rm tradingagents-ollama
 ```
 
+### Kubernetes and Helm
+
+The Helm chart in `helm/tradingagents` runs scheduled analyses as a CronJob. It is suspended by default, and trade mode defaults to `practice` with the Trading 212 buy cap at `0`, so nothing is ordered until you change both.
+
+Create the Secret from the API keys and broker credentials in your `.env` (the script copies only credential entries, skips empty ones, and never touches other settings), then install the chart:
+
+```bash
+./create-k8s-secret.sh              # --env-file, --namespace, --secret-name are optional
+helm upgrade --install tradingagents oci://registry-1.docker.io/<dockerhub-user>/tradingagents \
+  --namespace tradingagents \
+  --set suspend=false \
+  --set 'run.tickers={NVDA,AAPL}' \
+  --set-string image.repository=<dockerhub-user>/tradingagents
+```
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `schedule`, `timeZone` | `30 13 * * 1-5`, `Etc/UTC` | When the job runs |
+| `suspend` | `true` | Set `false` to enable the schedule |
+| `run.tickers`, `run.analysts` | `[NVDA]`, all four | What each run analyses, dated today |
+| `config.tradeMode` | `practice` | `TRADINGAGENTS_TRADE_MODE`; `real` places live orders |
+| `config.maxBuyValue` | `"0"` | `TRADINGAGENTS_T212_MAX_BUY_VALUE`; `0` disables buys |
+| `config.extra` | `{}` | Further `TRADINGAGENTS_*` settings, as a map |
+| `secrets.existingSecret` | `tradingagents-secrets` | Secret loaded as environment variables |
+| `persistence.*` | 2Gi PVC | Keeps results, memory log and cache at `~/.tradingagents` |
+
+Run once without waiting for the schedule: `kubectl -n tradingagents create job --from=cronjob/tradingagents manual-run`.
+
+### Publishing the image and chart
+
+Pushes to `main` run `.github/workflows/docker-publish.yml`, which pushes `<user>/tradingagents` (`latest` and `sha-<commit>`) to Docker Hub, pins that tag in the chart, bumps the chart patch version and commits it. `helm-publish.yml` then pushes the chart to `oci://registry-1.docker.io/<user>`. Pull requests run `validate-deploy.yml`, which lints and renders the chart and builds the image without publishing.
+
+Add the repository secrets `DOCKERHUB_USERNAME` and a Docker Hub access token as `DOCKERHUB_TOKEN`. The workflow's chart commit needs `contents: write` access, so allow it if branch protection applies to `main`.
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
@@ -216,6 +250,19 @@ export TRADINGAGENTS_OUTPUT_LANGUAGE=English TRADINGAGENTS_MAX_DEBATE_ROUNDS=1 T
 tradingagents --ticker NVDA --date 2026-09-23 --analysts market,news,fundamentals --save --no-show
 ```
 Each flag skips only its own question. Run without a terminal, a missing answer stops the run before it starts and names the flag or variable to set.
+
+#### Trading 212 order execution
+
+When Trading 212 API credentials are configured, a CLI stock analysis automatically submits a DAY limit order only when the structured Trader proposal and final Portfolio Manager rating agree. Practice mode is the default (`--trade-mode practice` or `TRADINGAGENTS_TRADE_MODE=practice`) and routes to Trading 212's demo environment; `--trade-mode real` or `TRADINGAGENTS_TRADE_MODE=real` explicitly routes to the live account. Generate API keys with `account`, `metadata`, `portfolio`, and `orders:execute` scopes for the selected environment. Use the credentials for that same environment:
+
+```dotenv
+T212_API_KEY=your_trading_212_api_key
+T212_API_SECRET=your_trading_212_api_secret
+TRADINGAGENTS_TRADE_MODE=practice
+TRADINGAGENTS_T212_MAX_BUY_VALUE=0
+```
+
+Set `TRADINGAGENTS_T212_MAX_BUY_VALUE` to a positive per-order cap in your account's primary currency to enable buys; the default `0` disables them. Buy value is also capped by cash currently available in the account, and the stock's currency must match the account's primary currency. Sell decisions close only shares available in the account, never open short positions, and are skipped if their limit is below Trading 212's current position price. Orders are skipped for non-stock or historical-date runs, missing or conflicting structured decisions, invalid limit prices, or unsupported/unresolved instruments. Submissions are journaled locally to avoid blindly duplicating an order if a run is resumed after an uncertain API response. Trading 212's public API is beta, and limit-order submissions are not idempotent; verify an order in your account before retrying after an error. Real mode can place real-money orders.
 
 At start-up the interactive CLI mentions a newer release and notices from Tauric Research. It checks at most once a day, in the background, and sends nothing about your runs; set `TRADINGAGENTS_NO_UPDATE_CHECK=1` to turn it off. Runs without a terminal never check.
 

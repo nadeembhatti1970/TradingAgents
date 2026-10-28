@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "tradingagents.fullname" . }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  timeZone: {{ .Values.timeZone | quote }}
+  suspend: {{ .Values.suspend }}
+  concurrencyPolicy: {{ .Values.concurrencyPolicy }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: tradingagents
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  status=0
+                  for ticker in {{ join " " .Values.run.tickers }}; do
+                    tradingagents --ticker "$ticker" --date "$(date +%F)" \
+                      --analysts {{ .Values.run.analysts | quote }} \
+                      --save --no-show || status=1
+                  done
+                  exit $status
+              envFrom:
+                - configMapRef:
+                    name: {{ include "tradingagents.fullname" . }}
+                - secretRef:
+                    name: {{ .Values.secrets.existingSecret }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+              volumeMounts:
+                - name: data
+                  mountPath: /home/appuser/.tradingagents
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              {{- if .Values.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ include "tradingagents.claimName" . }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            - name: tmp
+              emptyDir: {}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

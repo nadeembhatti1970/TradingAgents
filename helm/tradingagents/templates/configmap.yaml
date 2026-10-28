@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tradingagents.fullname" . }}
+data:
+  TRADINGAGENTS_TRADE_MODE: {{ .Values.config.tradeMode | quote }}
+  TRADINGAGENTS_T212_MAX_BUY_VALUE: {{ .Values.config.maxBuyValue | quote }}
+{{- range $key, $value := .Values.config.extra }}
+  {{ $key }}: {{ $value | quote }}
+{{- end }}

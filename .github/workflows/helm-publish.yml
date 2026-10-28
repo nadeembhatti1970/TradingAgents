@@ -1,0 +1,48 @@
+name: Publish Helm chart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "helm/tradingagents/**"
+      - ".github/workflows/helm-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint and package chart
+        run: |
+          helm lint ./helm/tradingagents
+          mkdir -p "$RUNNER_TEMP/chart"
+          helm package ./helm/tradingagents --destination "$RUNNER_TEMP/chart"
+
+      - name: Log in to Docker Hub OCI registry
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io \
+            --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Push chart to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          helm push "$RUNNER_TEMP"/chart/tradingagents-*.tgz \
+            "oci://registry-1.docker.io/$DOCKERHUB_USERNAME"
