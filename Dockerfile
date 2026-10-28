@@ -12,8 +12,11 @@ RUN pip install --no-cache-dir .
 
 FROM python:3.13-slim
 
+ARG APP_VERSION=dev
+
 # TRADINGAGENTS_IN_DOCKER lets an update notice name the rebuild command.
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV APP_VERSION=$APP_VERSION \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TRADINGAGENTS_IN_DOCKER=1
 
