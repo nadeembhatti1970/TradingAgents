@@ -24,6 +24,8 @@ def test_no_env_uses_built_in_defaults(monkeypatch):
     assert config["deep_think_llm"] == "gpt-6-sol"
     assert config["quick_think_llm"] == "gpt-6-luna"
     assert config["backend_url"] is None
+    assert config["trade_mode"] == "practice"
+    assert config["t212_max_buy_value"] == 0.0
     assert config["max_debate_rounds"] == 1
     assert config["checkpoint_enabled"] is False
 
@@ -42,6 +44,26 @@ def test_string_overrides(monkeypatch):
     assert config["quick_think_llm"] == "gemini-3-flash-preview"
     assert config["backend_url"] == "https://example.invalid/v1"
     assert config["output_language"] == "Chinese"
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [("practise", "practice"), ("paper", "practice"), ("live", "real")],
+)
+def test_trading_mode_and_buy_cap_overrides(monkeypatch, mode, expected):
+    config = _config_with_env(
+        monkeypatch,
+        TRADINGAGENTS_TRADE_MODE=mode,
+        TRADINGAGENTS_T212_MAX_BUY_VALUE="125.50",
+    )
+    assert config["trade_mode"] == expected
+    assert config["t212_max_buy_value"] == 125.5
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "inf"])
+def test_t212_buy_cap_must_be_finite_and_non_negative(monkeypatch, value):
+    with pytest.raises(ValueError, match="TRADINGAGENTS_T212_MAX_BUY_VALUE"):
+        _config_with_env(monkeypatch, TRADINGAGENTS_T212_MAX_BUY_VALUE=value)
 
 
 def test_int_coercion(monkeypatch):

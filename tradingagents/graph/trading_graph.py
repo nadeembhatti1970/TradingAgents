@@ -270,6 +270,7 @@ class TradingAgentsGraph:
             "max_debate_rounds": cfg.get("max_debate_rounds"),
             "max_risk_discuss_rounds": cfg.get("max_risk_discuss_rounds"),
             "output_language": cfg.get("output_language"),
+            "trade_mode": cfg.get("trade_mode", "practice"),
             "data_vendors": dict(cfg.get("data_vendors") or {}),
             "tool_vendors": dict(cfg.get("tool_vendors") or {}),
         }

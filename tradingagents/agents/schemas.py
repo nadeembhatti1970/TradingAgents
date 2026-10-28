@@ -177,12 +177,21 @@ class TraderProposal(BaseModel):
             "distance to the price level it implies, or omit it."
         ),
     )
+    limit_price: float | None = Field(
+        default=None,
+        description=(
+            "Optional absolute limit-order price in the instrument's quote "
+            "currency. For Buy, this is the maximum price to pay; for Sell, "
+            "this is the minimum price to accept. Omit it if you cannot state "
+            "a specific actionable level."
+        ),
+    )
     position_sizing: str | None = Field(
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
 
-    @field_validator("entry_price", "stop_loss", mode="before")
+    @field_validator("entry_price", "stop_loss", "limit_price", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
@@ -204,6 +213,7 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
     # to give from one the schema never asked for.
     for label, value in (("Entry Price", proposal.entry_price),
                          ("Stop Loss", proposal.stop_loss),
+                         ("Limit Price", proposal.limit_price),
                          ("Position Sizing", proposal.position_sizing)):
         parts.extend(["", f"**{label}**: {value if value is not None and value != '' else 'not provided'}"])
     parts.extend([

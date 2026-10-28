@@ -1,5 +1,6 @@
 """Running one analysis from the CLI: build the graph, stream it into the live view, save the report."""
 
+import json
 import os
 import sys
 import time
@@ -25,6 +26,7 @@ from cli.display import (
 from cli.selections import depth_from_env, get_user_selections, unattended_gaps
 from cli.stats_handler import StatsCallbackHandler
 from tradingagents.agents.rating import is_review, run_rating
+from tradingagents.brokers.trading212 import Trading212Error, action_for_rating, execute_trade
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import (
@@ -83,6 +85,7 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     config["deep_think_llm"] = selections["deep_think_llm"]
     config["backend_url"] = selections["backend_url"]
     config["llm_provider"] = selections["llm_provider"].lower()
+    config["trade_mode"] = selections.get("trade_mode", DEFAULT_CONFIG.get("trade_mode", "practice"))
     # Provider-specific thinking configuration. Only the main provider's is
     # asked; a tier on another provider keeps its configured value (#1440).
     for key in ("google_thinking_level", "openai_reasoning_effort", "anthropic_effort"):
@@ -347,6 +350,29 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
             for chunk in trace:
                 final_state.update(chunk)
 
+            try:
+                execution = _execute_trading212(config, selections, final_state)
+            except Trading212Error as exc:
+                execution = {"status": "error", "reason": str(exc)}
+            final_state["trade_execution"] = execution
+            final_state["trade_execution_report"] = (
+                "```json\n" + json.dumps(execution, indent=2, sort_keys=True) + "\n```"
+            )
+            if execution["status"] == "submitted":
+                message_buffer.add_message(
+                    "Trading 212",
+                    f"{execution['mode']} {execution['side']} order submitted: "
+                    f"{execution['quantity']:g} {execution['ticker']} at limit "
+                    f"{execution['limit_price']:g} "
+                    f"(order {execution['order_id'] or 'ID unavailable'}; "
+                    f"{execution['order_status'] or 'status unavailable'}).",
+                )
+            else:
+                message_buffer.add_message(
+                    "Trading 212",
+                    f"Order not submitted ({execution['status']}): {execution['reason']}",
+                )
+
             # Clean run: log the decision, then drop this run's checkpoint so a
             # later run starts fresh. A mid-stream failure skips both, keeping
             # the checkpoint for resume.
@@ -387,6 +413,41 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
 
     _offer_reports(final_state, graph, selections["ticker"],
                    save=flags.get("save"), show=flags.get("show"), html=flags.get("html"))
+
+
+def _execute_trading212(config: dict, selections: dict, final_state: dict):
+    """Execute only a typed Trader proposal confirmed by the final portfolio rating."""
+    if selections.get("asset_type") != "stock":
+        return {
+            "status": "skipped",
+            "reason": "Trading 212 execution is only enabled for stocks.",
+        }
+    proposal = final_state.get("trader_proposal")
+    if not isinstance(proposal, dict):
+        return {
+            "status": "skipped",
+            "reason": "The Trader did not return a validated structured proposal.",
+        }
+    action = action_for_rating(final_state.get("final_rating", ""))
+    if action is None:
+        return {"status": "skipped", "reason": "The final decision is Hold or has no trade action."}
+    if proposal.get("action") != action:
+        return {
+            "status": "skipped",
+            "reason": (
+                "The Trader proposal and final portfolio decision disagree; "
+                "no order was submitted."
+            ),
+        }
+    return execute_trade(
+        symbol=selections["ticker"],
+        trade_date=selections["analysis_date"],
+        action=action,
+        limit_price=proposal.get("limit_price"),
+        mode=config.get("trade_mode", "practice"),
+        max_buy_value=config.get("t212_max_buy_value", 0.0),
+        data_dir=config["data_cache_dir"],
+    )
 
 
 def _yes(question: str) -> bool:

@@ -1,3 +1,4 @@
+import math
 import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
@@ -16,6 +17,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_DEEP_THINK_BACKEND_URL":    "deep_think_backend_url",
     "TRADINGAGENTS_QUICK_THINK_BACKEND_URL":   "quick_think_backend_url",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
+    "TRADINGAGENTS_TRADE_MODE":           "trade_mode",
+    "TRADINGAGENTS_T212_MAX_BUY_VALUE":    "t212_max_buy_value",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
@@ -36,6 +39,36 @@ _ENV_OVERRIDES = {
 
 _BOOL_TRUE = ("true", "1", "yes", "on")
 _BOOL_FALSE = ("false", "0", "no", "off")
+
+_TRADE_MODE_ALIASES = {
+    "practice": "practice",
+    "practise": "practice",
+    "paper": "practice",
+    "demo": "practice",
+    "simulation": "practice",
+    "real": "real",
+    "live": "real",
+    "production": "real",
+}
+
+
+def normalize_trade_mode(value: str | None) -> str:
+    """Normalise a user or env trade mode to the canonical values ``practice``/``real``.
+
+    Accept both British and American spellings and common synonyms so a
+    configuration can be set by either a human or an automation system.
+    """
+    if value is None:
+        return "practice"
+    if not isinstance(value, str):
+        raise TypeError("trade mode must be a string")
+    key = value.strip().lower().replace("-", " ").replace("_", " ")
+    if key in _TRADE_MODE_ALIASES:
+        return _TRADE_MODE_ALIASES[key]
+    canonical = " ".join(key.split())
+    if canonical in _TRADE_MODE_ALIASES:
+        return _TRADE_MODE_ALIASES[canonical]
+    raise ValueError("trade_mode must be one of: practice, practise, real, live")
 
 
 def _coerce(value: str, reference):
@@ -68,7 +101,14 @@ def _apply_env_overrides(config: dict) -> dict:
         if raw is None or raw == "":
             continue
         try:
-            config[key] = _coerce(raw, config.get(key))
+            if key == "trade_mode":
+                config[key] = normalize_trade_mode(raw)
+            else:
+                config[key] = _coerce(raw, config.get(key))
+                if key == "t212_max_buy_value" and (
+                    not math.isfinite(config[key]) or config[key] < 0
+                ):
+                    raise ValueError("must be a finite non-negative amount")
         except ValueError as exc:
             raise ValueError(f"Invalid value for {env_var}: {exc}") from exc
     return config
@@ -90,6 +130,8 @@ def build_default_config() -> dict:
         "memory_log_max_entries": None,
         # LLM settings
         "llm_provider": "openai",
+        "trade_mode": "practice",
+        "t212_max_buy_value": 0.0,
         "deep_think_llm": "gpt-6-sol",
         "quick_think_llm": "gpt-6-luna",
         # When None, each provider's client falls back to its own default endpoint

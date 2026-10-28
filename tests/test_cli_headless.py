@@ -141,7 +141,21 @@ def test_the_command_passes_its_flags_to_the_run(monkeypatch):
                                                "--analysts", "market,news", "--save", "--no-show"])
 
     assert result.exit_code == 0, result.output
-    assert seen["flags"] == {**FLAGS, "html": None}
+    assert seen["flags"] == {**FLAGS, "trade_mode": None, "html": None}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value, expected", [
+    ("practice", "practice"),
+    ("practise", "practice"),
+    ("paper", "practice"),
+    ("live", "real"),
+    ("real", "real"),
+])
+def test_trade_mode_normalisation_accepts_practice_and_real_aliases(value, expected):
+    from tradingagents.default_config import normalize_trade_mode
+
+    assert normalize_trade_mode(value) == expected
 
 
 @pytest.mark.unit

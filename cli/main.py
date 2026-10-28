@@ -10,7 +10,7 @@ from cli.models import AnalystType, AssetType
 from cli.prompts import filter_analysts_for_asset_type, parse_analysts
 from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.default_config import DEFAULT_CONFIG, normalize_trade_mode
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
 
@@ -58,6 +58,11 @@ def analyze(
     analysts: str = typer.Option(
         None, "--analysts", help="Comma-separated analysts, e.g. market,news; skips the prompt"
     ),
+    trade_mode: str | None = typer.Option(
+        None,
+        "--trade-mode",
+        help="Execution mode for any outbound trade actions: practice/practise/paper or real/live.",
+    ),
     save: bool | None = typer.Option(
         None, "--save/--no-save", help="Save the report under results_dir without asking"
     ),
@@ -89,7 +94,15 @@ def analyze(
             raise typer.Exit(code=1) from None
 
     try:
-        flags = {"ticker": ticker, "date": date, "analysts": analysts, "save": save, "show": show, "html": html}
+        flags = {
+            "ticker": ticker,
+            "date": date,
+            "analysts": analysts,
+            "trade_mode": normalize_trade_mode(trade_mode) if trade_mode is not None else None,
+            "save": save,
+            "show": show,
+            "html": html,
+        }
         run_analysis(checkpoint=checkpoint, portfolio=portfolio_context, flags=flags)
     except _NO_CONSOLE_ERRORS:
         # A terminal with no console buffer cannot host the interactive prompts.
@@ -117,6 +130,11 @@ def backtest(
     portfolio: str = typer.Option(
         None, "--portfolio", help="JSON file with holdings and cash, held constant across the grid"
     ),
+    trade_mode: str | None = typer.Option(
+        None,
+        "--trade-mode",
+        help="Execution mode for any trade actions: practice/practise/paper or real/live.",
+    ),
     run_id: str = typer.Option(
         None, "--run-id", help="Continue an earlier sweep: its cells are skipped and its log reused"
     ),
@@ -143,11 +161,19 @@ def backtest(
     def show_progress(done, total, ticker, date):
         console.print(f"[dim][{done}/{total}] {ticker} {date}[/dim]")
 
-    kwargs = {"asset_type": kind.value, "portfolio": book, "run_id": run_id, "progress": show_progress,
-              "selected_analysts": [a.value for a in chosen]}
+    kwargs = {
+        "asset_type": kind.value,
+        "portfolio": book,
+        "run_id": run_id,
+        "progress": show_progress,
+        "selected_analysts": [a.value for a in chosen],
+    }
+    run_config = DEFAULT_CONFIG.copy()
+    if trade_mode is not None:
+        run_config["trade_mode"] = normalize_trade_mode(trade_mode)
 
     try:
-        result = run_backtest(names, dates, DEFAULT_CONFIG, **kwargs)
+        result = run_backtest(names, dates, run_config, **kwargs)
     except Exception as exc:  # a missing key or an unknown analyst is a setup error
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None

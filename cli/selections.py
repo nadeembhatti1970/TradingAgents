@@ -37,7 +37,7 @@ from cli.prompts import (
     select_research_depth,
     select_shallow_thinking_agent,
 )
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.default_config import DEFAULT_CONFIG, normalize_trade_mode
 from tradingagents.llm_clients.factory import REASONING_EFFORT_PROVIDERS
 from tradingagents.llm_clients.openai_client import check_endpoint
 
@@ -198,6 +198,17 @@ def _prompt_selections(prefs, flags):
             )
         )
         analysis_date = get_analysis_date()
+
+    # Trade mode is configuration, not a user analysis step: it changes how
+    # outbound execution is routed, and defaults to practice until a real/live
+    # mode is explicitly requested.
+    if flags.get("trade_mode") is not None:
+        selected_trade_mode = _from_flag(normalize_trade_mode, flags["trade_mode"])
+        console.print(f"[green]✓ Trade mode from --trade-mode:[/green] {selected_trade_mode}")
+    else:
+        selected_trade_mode = normalize_trade_mode(
+            os.environ.get("TRADINGAGENTS_TRADE_MODE") or DEFAULT_CONFIG.get("trade_mode", "practice")
+        )
 
     # Step 3: Output language (skipped when set via TRADINGAGENTS_OUTPUT_LANGUAGE)
     if os.environ.get("TRADINGAGENTS_OUTPUT_LANGUAGE"):
@@ -362,6 +373,7 @@ def _prompt_selections(prefs, flags):
         "research_depth": selected_research_depth,
         "llm_provider": selected_llm_provider.lower(),
         "backend_url": backend_url,
+        "trade_mode": selected_trade_mode,
         "quick_think_llm": selected_shallow_thinker,
         "deep_think_llm": selected_deep_thinker,
         "google_thinking_level": thinking_level,

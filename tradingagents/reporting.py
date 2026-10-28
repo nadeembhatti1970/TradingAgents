@@ -70,6 +70,9 @@ _SECTIONS = (
     ("V. Portfolio Manager Decision", "5_portfolio", (
         ("Portfolio Manager", "decision.md", ("final_trade_decision",)),
     )),
+    ("VI. Trading 212 Execution", "6_execution", (
+        ("Trading 212", "execution.md", ("trade_execution_report",)),
+    )),
 )
 
 
