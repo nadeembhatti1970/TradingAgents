@@ -177,8 +177,10 @@ helm upgrade --install tradingagents oci://registry-1.docker.io/<dockerhub-user>
 | `schedule`, `timeZone` | `30 13 * * 1-5`, `Etc/UTC` | When the job runs |
 | `suspend` | `true` | Set `false` to enable the schedule |
 | `run.tickers`, `run.analysts` | `[NVDA]`, all four | What each run analyses, dated today |
+| `run.etf`, `run.topN` | `ISF.L`, `10` | When `etf` is set, analyse that ETF's `topN` largest holdings (`tradingagents etf-holdings`) instead of `tickers`; Yahoo lists at most ~10 per fund |
 | `config.tradeMode` | `practice` | `TRADINGAGENTS_TRADE_MODE`; `real` places live orders |
 | `config.maxBuyValue` | `"0"` | `TRADINGAGENTS_T212_MAX_BUY_VALUE`; `0` disables buys |
+| `config.maxDailyBuyValue` | `"250"` | `TRADINGAGENTS_T212_MAX_DAILY_BUY_VALUE`; total buy value per day across all orders; `0` disables the cap |
 | `config.extra` | `{}` | Further `TRADINGAGENTS_*` settings, as a map |
 | `secrets.existingSecret` | `tradingagents-secrets` | Secret loaded as environment variables |
 | `persistence.*` | 2Gi PVC | Keeps results, memory log and cache at `~/.tradingagents` |

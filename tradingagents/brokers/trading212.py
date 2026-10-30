@@ -186,7 +186,29 @@ class Trading212Client:
         return result
 
 
-def _journal_claim(path: Path, execution_id: str, symbol: str, mode: str) -> bool:
+def _ensure_journal(db: sqlite3.Connection) -> None:
+    columns = {row[1] for row in db.execute("PRAGMA table_info(trading212_orders)")}
+    if columns and "value" not in columns:
+        db.execute("ALTER TABLE trading212_orders ADD COLUMN value REAL NOT NULL DEFAULT 0")
+
+
+def _journal_spent_today(path: Path, mode: str) -> float:
+    """Buy value already claimed today; uncertain orders count as spent."""
+    if not path.exists():
+        return 0.0
+    with sqlite3.connect(path) as db:
+        _ensure_journal(db)
+        row = db.execute(
+            "SELECT COALESCE(SUM(value), 0) FROM trading212_orders "
+            "WHERE mode = ? AND date(created_at) = date('now')",
+            (mode,),
+        ).fetchone()
+    return float(row[0])
+
+
+def _journal_claim(
+    path: Path, execution_id: str, symbol: str, mode: str, value: float = 0.0
+) -> bool:
     """Claim this ticker/date/mode once; an uncertain POST is never retried blindly."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as db:
@@ -197,13 +219,15 @@ def _journal_claim(path: Path, execution_id: str, symbol: str, mode: str) -> boo
                 mode TEXT NOT NULL,
                 status TEXT NOT NULL,
                 order_id TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                value REAL NOT NULL DEFAULT 0
             )"""
         )
+        _ensure_journal(db)
         cursor = db.execute(
             "INSERT OR IGNORE INTO trading212_orders "
-            "(execution_id, symbol, mode, status) VALUES (?, ?, ?, 'submitting')",
-            (execution_id, symbol, mode),
+            "(execution_id, symbol, mode, status, value) VALUES (?, ?, ?, 'submitting', ?)",
+            (execution_id, symbol, mode, value),
         )
         return cursor.rowcount == 1
 
@@ -251,6 +275,7 @@ def execute_trade(
     mode: str,
     max_buy_value: float,
     data_dir: str | Path,
+    max_daily_buy_value: float = 0.0,
     client: Trading212Client | None = None,
 ) -> dict[str, Any]:
     """Submit one guarded limit order; returns an explicit skip or order receipt."""
@@ -284,6 +309,10 @@ def execute_trade(
     currency = (instrument.get("currencyCode") or "").upper()
     account = client.account_details()
     account_currency = account["currency"]
+    # GBX instruments are priced in pence, so values in GBP use price / 100.
+    price_divisor = 100.0 if currency == "GBX" else 1.0
+    if currency == "GBX":
+        currency = "GBP"
     if action == "Buy" and (not currency or currency != account_currency):
         return {
             "status": "skipped",
@@ -300,8 +329,19 @@ def execute_trade(
                 "status": "skipped",
                 "reason": "The account has no cash currently available to trade.",
             }
-        quantity = _quantity_for_buy(affordable_value, limit_price)
-        if quantity * limit_price > max_buy_value:
+        if max_daily_buy_value > 0:
+            remaining = max_daily_buy_value - _journal_spent_today(
+                Path(data_dir) / "trading212_orders.sqlite", canonical_mode
+            )
+            if remaining <= 0:
+                return {
+                    "status": "skipped",
+                    "reason": "The daily buy cap has been reached; no order was submitted.",
+                }
+            affordable_value = min(affordable_value, remaining)
+        quantity = _quantity_for_buy(affordable_value, limit_price / price_divisor)
+        order_value = quantity * limit_price / price_divisor
+        if order_value > max_buy_value:
             raise Trading212Error("Calculated buy order exceeds the configured maximum value.")
     else:
         position = client.position(ticker)
@@ -337,12 +377,13 @@ def execute_trade(
                 ),
             }
         quantity = -available
+        order_value = 0.0
 
     execution_id = hashlib.sha256(
         f"{symbol.upper()}:{trade_date}:{canonical_mode}".encode()
     ).hexdigest()
     journal = Path(data_dir) / "trading212_orders.sqlite"
-    if not _journal_claim(journal, execution_id, symbol, canonical_mode):
+    if not _journal_claim(journal, execution_id, symbol, canonical_mode, order_value):
         return {
             "status": "skipped",
             "reason": (

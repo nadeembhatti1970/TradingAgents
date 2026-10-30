@@ -446,6 +446,7 @@ def _execute_trading212(config: dict, selections: dict, final_state: dict):
         limit_price=proposal.get("limit_price"),
         mode=config.get("trade_mode", "practice"),
         max_buy_value=config.get("t212_max_buy_value", 0.0),
+        max_daily_buy_value=config.get("t212_max_daily_buy_value", 0.0),
         data_dir=config["data_cache_dir"],
     )
 

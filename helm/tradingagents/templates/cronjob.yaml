@@ -31,7 +31,12 @@ spec:
               args:
                 - |
                   status=0
-                  for ticker in {{ join " " .Values.run.tickers }}; do
+                  {{- if .Values.run.etf }}
+                  tickers="$(tradingagents etf-holdings {{ .Values.run.etf | quote }} --top {{ .Values.run.topN }})" || exit 1
+                  {{- else }}
+                  tickers={{ join " " .Values.run.tickers | quote }}
+                  {{- end }}
+                  for ticker in $tickers; do
                     tradingagents --ticker "$ticker" --date "$(date +%F)" \
                       --analysts {{ .Values.run.analysts | quote }} \
                       --save --no-show || status=1

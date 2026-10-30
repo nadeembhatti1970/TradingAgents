@@ -190,6 +190,23 @@ def backtest(
 Plan = StrEnum("Plan", {name: name for name in SIGNED_IN_PROVIDERS})
 
 
+@app.command("etf-holdings")
+def etf_holdings(
+    etf: str = typer.Argument(..., help="ETF symbol, e.g. ISF.L or QQQ"),
+    top: int = typer.Option(10, "--top", min=1, help="Number of largest holdings to list"),
+):
+    """Print the ETF's largest holdings, one ticker per line."""
+    from tradingagents.etf import top_holdings
+
+    try:
+        symbols = top_holdings(etf, top)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    for symbol in symbols:
+        typer.echo(symbol)
+
+
 @app.command()
 def login(plan: Annotated[Plan, typer.Argument(help="The plan to sign in with")]):
     """Sign in with your ChatGPT Plus or Pro plan, for the chatgpt provider."""

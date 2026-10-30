@@ -6,12 +6,16 @@ image:
 # One CronJob run analyses every ticker with today's date.
 schedule: "30 13 * * 1-5"
 timeZone: Etc/UTC
-suspend: true
+suspend: false
 concurrencyPolicy: Forbid
 backoffLimit: 0
 activeDeadlineSeconds: 7200
 
 run:
+  # When etf is set, the topN largest holdings of that ETF are analysed
+  # instead of tickers (Yahoo lists at most ~10 holdings per fund).
+  etf: "ISF.L"
+  topN: 10
   tickers: ["NVDA"]
   analysts: "market,social,news,fundamentals"
 
@@ -19,7 +23,8 @@ run:
 # tradeMode: real and a non-zero maxBuyValue; both default to the safe values.
 config:
   tradeMode: practice
-  maxBuyValue: "0"
+  maxBuyValue: "50"
+  maxDailyBuyValue: "250"
   extra: {}
 
 # Existing Secret holding the LLM provider keys and broker credentials,

@@ -222,3 +222,48 @@ def test_mode_selects_explicit_demo_or_live_endpoint():
     real = Trading212Client("real", "key", "secret")
     assert practice.base_url == "https://demo.trading212.com/api/v0"
     assert real.base_url == "https://live.trading212.com/api/v0"
+
+
+@pytest.mark.unit
+def test_gbx_instrument_buys_in_gbp_account_using_pence_prices(tmp_path):
+    client = _Client(currency="GBX")
+    client.currency = "GBP"
+    result = execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Buy",
+        limit_price=1000,  # pence
+        mode="practice",
+        max_buy_value=50,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert result["status"] == "submitted"
+    assert result["quantity"] == 5  # GBP 50 / GBP 10
+    assert result["quantity"] * result["limit_price"] / 100 <= 50
+
+
+@pytest.mark.unit
+def test_daily_buy_cap_limits_total_spend_across_symbols(tmp_path):
+    class _Multi(_Client):
+        def resolve_instrument(self, symbol):
+            return {**self.instrument, "ticker": f"{symbol}_US_EQ"}
+
+    def buy(symbol):
+        return execute_trade(
+            symbol=symbol,
+            trade_date=date.today().isoformat(),
+            action="Buy",
+            limit_price=10,
+            mode="practice",
+            max_buy_value=100,
+            max_daily_buy_value=150,
+            data_dir=tmp_path,
+            client=_Multi(),
+        )
+
+    assert buy("AAA")["quantity"] == 10
+    assert buy("BBB")["quantity"] == 5  # only 50 of the 150 cap remains
+    capped = buy("CCC")
+    assert capped["status"] == "skipped"
+    assert "daily buy cap" in capped["reason"]

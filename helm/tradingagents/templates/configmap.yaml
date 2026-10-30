@@ -5,6 +5,7 @@ metadata:
 data:
   TRADINGAGENTS_TRADE_MODE: {{ .Values.config.tradeMode | quote }}
   TRADINGAGENTS_T212_MAX_BUY_VALUE: {{ .Values.config.maxBuyValue | quote }}
+  TRADINGAGENTS_T212_MAX_DAILY_BUY_VALUE: {{ .Values.config.maxDailyBuyValue | quote }}
 {{- range $key, $value := .Values.config.extra }}
   {{ $key }}: {{ $value | quote }}
 {{- end }}

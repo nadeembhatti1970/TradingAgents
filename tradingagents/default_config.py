@@ -19,6 +19,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
     "TRADINGAGENTS_TRADE_MODE":           "trade_mode",
     "TRADINGAGENTS_T212_MAX_BUY_VALUE":    "t212_max_buy_value",
+    "TRADINGAGENTS_T212_MAX_DAILY_BUY_VALUE": "t212_max_daily_buy_value",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
@@ -105,7 +106,7 @@ def _apply_env_overrides(config: dict) -> dict:
                 config[key] = normalize_trade_mode(raw)
             else:
                 config[key] = _coerce(raw, config.get(key))
-                if key == "t212_max_buy_value" and (
+                if key in ("t212_max_buy_value", "t212_max_daily_buy_value") and (
                     not math.isfinite(config[key]) or config[key] < 0
                 ):
                     raise ValueError("must be a finite non-negative amount")
@@ -132,6 +133,8 @@ def build_default_config() -> dict:
         "llm_provider": "openai",
         "trade_mode": "practice",
         "t212_max_buy_value": 0.0,
+        # Total buy value allowed per day across all orders; 0 disables this cap.
+        "t212_max_daily_buy_value": 0.0,
         "deep_think_llm": "gpt-6-sol",
         "quick_think_llm": "gpt-6-luna",
         # When None, each provider's client falls back to its own default endpoint
