@@ -99,8 +99,13 @@ class Trading212Client:
                 "verify the order status in the account before retrying."
             ) from exc
         if not response.ok:
+            hint = (
+                " (the API key may lack the permission scope this endpoint needs)"
+                if response.status_code == 403
+                else ""
+            )
             raise Trading212Error(
-                f"Trading 212 returned HTTP {response.status_code} for {method} {path}; "
+                f"Trading 212 returned HTTP {response.status_code} for {method} {path}{hint}; "
                 "verify the account and order status before retrying."
             )
         try:
@@ -268,7 +273,12 @@ def find_instrument_matches(symbol: str, instruments: list[Any]) -> list[dict[st
         else:
             fits = isin_country == "US" or item.get("currencyCode") == "USD"
         (fitting if fits else others).append(item)
-    return fitting or others
+    pool = fitting or others
+    if suffix == ".L" and len(pool) > 1:
+        # London listings are ``<base>l_EQ``; this separates them from ADR lines.
+        london = [i for i in pool if str(i.get("ticker", "")).upper() == f"{base}L_EQ"]
+        pool = london or pool
+    return pool
 
 
 def _ensure_journal(db: sqlite3.Connection) -> None:

@@ -326,3 +326,14 @@ def test_instrument_list_is_cached_on_disk(tmp_path):
     again = Trading212Client("practice", "k", "s", session=second, instruments_cache=cache)
     assert again.resolve_instrument("HSBA.L")["ticker"] == "HSBAl_EQ"
     assert (first.calls, second.calls) == (1, 0)
+
+
+@pytest.mark.unit
+def test_london_symbol_prefers_london_line_over_adr_with_same_short_name():
+    from tradingagents.brokers.trading212 import find_instrument_matches
+
+    instruments = [
+        {"ticker": "AZN_US_EQ", "type": "STOCK", "shortName": "AZN", "currencyCode": "GBX"},
+        {"ticker": "AZNl_EQ", "type": "STOCK", "shortName": "AZN", "currencyCode": "GBX"},
+    ]
+    assert [i["ticker"] for i in find_instrument_matches("AZN.L", instruments)] == ["AZNl_EQ"]
