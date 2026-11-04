@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 # calling the schema tool) is retried this many times before the free-text fallback.
 STRUCTURED_ATTEMPTS = 3
 
+# The agent prompts ask for prose sections so the free-text fallback reads well.
+# Models such as DeepSeek follow that literally and answer in text without calling
+# the schema tool, so structured attempts end by asking for the tool call.
+TOOL_CALL_REMINDER = (
+    "Deliver your answer by calling the provided tool with every field filled in. "
+    "Do not write the sections out as prose; a text reply will be discarded."
+)
+TOOL_CALL_RETRY_REMINDER = (
+    "Your previous reply was plain text and was discarded. "
+    "Respond only with a call to the provided tool."
+)
+
 T = TypeVar("T", bound=BaseModel)
 
 # Schema-only structured output binds exactly one tool (the schema itself), so a
@@ -59,6 +71,17 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
             agent_name, exc,
         )
         return None
+
+
+def _with_reminder(prompt: Any, reminder: str) -> Any:
+    """Append ``reminder`` to a string prompt or to the last message of a dict-message list."""
+    if isinstance(prompt, str):
+        return f"{prompt}\n\n{reminder}"
+    if isinstance(prompt, list) and prompt and isinstance(prompt[-1], dict):
+        last = prompt[-1]
+        if isinstance(last.get("content"), str):
+            return [*prompt[:-1], {**last, "content": f"{last['content']}\n\n{reminder}"}]
+    return prompt
 
 
 def _describe_llm_reply(runs: list[Any]) -> str:
@@ -96,16 +119,18 @@ def invoke_structured(
     ``prompt`` is whatever the underlying LLM accepts (a string for chat
     invocations, a list of message dicts for chat models that take that
     shape), so a caller can forward the same value to its free-text fallback.
-    Each attempt that fails logs what the model actually returned, and the call
+    Every attempt asks for the tool call explicitly, and the free-text fallback
+    the caller runs afterwards still uses the original prompt. Each attempt that fails logs what the model actually returned, and the call
     is retried because a model may answer in plain text on one try and call
     the schema tool on the next.
     """
     if structured_llm is None:
         return None
     for attempt in range(1, max(attempts, 1) + 1):
+        reminder = TOOL_CALL_REMINDER if attempt == 1 else TOOL_CALL_RETRY_REMINDER
         with collect_runs() as collector:
             try:
-                result = structured_llm.invoke(prompt)
+                result = structured_llm.invoke(_with_reminder(prompt, reminder))
                 if result is None:
                     # A thinking model can answer in plain text instead of calling
                     # the tool, leaving the parser with nothing to return. Treat it

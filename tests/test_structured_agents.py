@@ -582,3 +582,34 @@ def test_invoke_structured_logs_model_reply_and_falls_back(caplog):
     assert "attempt 1/2 failed" in text and "attempt 2/2 failed" in text
     assert "I think you should buy." in text
     assert "falling back to free text" in text
+
+
+@pytest.mark.unit
+def test_invoke_structured_asks_for_the_tool_call_without_changing_the_prompt():
+    from tradingagents.agents.structured import (
+        TOOL_CALL_REMINDER,
+        TOOL_CALL_RETRY_REMINDER,
+        invoke_structured,
+    )
+
+    seen = []
+
+    class _Llm:
+        def invoke(self, prompt):
+            seen.append(prompt)
+            return None if len(seen) == 1 else "ok"
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Write these sections"},
+    ]
+    assert invoke_structured(_Llm(), messages, "Trader") == "ok"
+
+    assert seen[0][-1]["content"].endswith(TOOL_CALL_REMINDER)
+    assert seen[1][-1]["content"].endswith(TOOL_CALL_RETRY_REMINDER)
+    assert seen[0][0] == messages[0]
+    assert messages[-1]["content"] == "Write these sections"
+
+    seen.clear()
+    assert invoke_structured(_Llm(), "plain prompt", "Portfolio Manager") == "ok"
+    assert seen[0] == f"plain prompt\n\n{TOOL_CALL_REMINDER}"
