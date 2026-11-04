@@ -267,3 +267,62 @@ def test_daily_buy_cap_limits_total_spend_across_symbols(tmp_path):
     capped = buy("CCC")
     assert capped["status"] == "skipped"
     assert "daily buy cap" in capped["reason"]
+
+
+_LSE_INSTRUMENTS = [
+    {"ticker": "HSBAl_EQ", "type": "STOCK", "shortName": "HSBA", "currencyCode": "GBX",
+     "isin": "GB0005405286"},
+    {"ticker": "HSBC_US_EQ", "type": "STOCK", "shortName": "HSBC", "currencyCode": "USD",
+     "isin": "US4042804066"},
+    {"ticker": "AAPL_US_EQ", "type": "STOCK", "shortName": "AAPL", "currencyCode": "USD",
+     "isin": "US0378331005"},
+    {"ticker": "HSBAl_ETF", "type": "ETF", "shortName": "HSBA", "currencyCode": "GBX",
+     "isin": "GB0000000000"},
+]
+
+
+class _Session:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = 0
+
+    def request(self, method, url, **kwargs):
+        self.calls += 1
+
+        class _Response:
+            ok = True
+
+            def json(_self):
+                return self.payload
+
+        return _Response()
+
+
+@pytest.mark.unit
+def test_london_symbol_resolves_to_trading212_ticker_by_short_name():
+    from tradingagents.brokers.trading212 import find_instrument_matches
+
+    assert [i["ticker"] for i in find_instrument_matches("HSBA.L", _LSE_INSTRUMENTS)] == ["HSBAl_EQ"]
+    assert find_instrument_matches("XXX.L", _LSE_INSTRUMENTS) == []
+
+
+@pytest.mark.unit
+def test_client_resolves_when_yahoo_pattern_ticker_is_not_listed():
+    client = Trading212Client("practice", "k", "s", session=_Session(_LSE_INSTRUMENTS))
+    assert client.resolve_instrument("HSBA.L")["ticker"] == "HSBAl_EQ"
+    assert client.resolve_instrument("AAPL")["ticker"] == "AAPL_US_EQ"
+    with pytest.raises(Trading212Error, match="Could not resolve XXX.L"):
+        client.resolve_instrument("XXX.L")
+
+
+@pytest.mark.unit
+def test_instrument_list_is_cached_on_disk(tmp_path):
+    cache = tmp_path / "instruments.json"
+    first = _Session(_LSE_INSTRUMENTS)
+    Trading212Client(
+        "practice", "k", "s", session=first, instruments_cache=cache
+    ).resolve_instrument("HSBA.L")
+    second = _Session([])
+    again = Trading212Client("practice", "k", "s", session=second, instruments_cache=cache)
+    assert again.resolve_instrument("HSBA.L")["ticker"] == "HSBAl_EQ"
+    assert (first.calls, second.calls) == (1, 0)

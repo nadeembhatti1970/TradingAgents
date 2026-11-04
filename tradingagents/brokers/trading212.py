@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import sqlite3
+import time
 from datetime import date
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -32,6 +34,18 @@ _EXCHANGE_SUFFIXES = {
 }
 
 
+# Yahoo suffix -> ISIN country prefixes and currencies Trading 212 lists the stock under.
+_SUFFIX_HINTS = {
+    ".L": {"isin": ("GB", "IE", "JE", "GG"), "currencies": ("GBX", "GBP")},
+    ".HK": {"isin": ("HK", "KY", "BM", "CN"), "currencies": ("HKD",)},
+    ".T": {"isin": ("JP",), "currencies": ("JPY",)},
+    ".TO": {"isin": ("CA",), "currencies": ("CAD",)},
+    ".AX": {"isin": ("AU",), "currencies": ("AUD",)},
+}
+# The instrument list is large and the endpoint allows about one call per 50 seconds.
+_INSTRUMENTS_TTL_SECONDS = 24 * 3600
+
+
 class Trading212Error(RuntimeError):
     """A rejected or malformed Trading 212 API operation."""
 
@@ -44,7 +58,9 @@ class Trading212Client:
         api_secret: str,
         *,
         session: requests.Session | None = None,
+        instruments_cache: str | Path | None = None,
     ):
+        self.instruments_cache = Path(instruments_cache) if instruments_cache else None
         self.mode = normalize_trade_mode(mode)
         if not api_key or not api_secret:
             raise Trading212Error("Set T212_API_KEY and T212_API_SECRET to enable execution.")
@@ -53,12 +69,19 @@ class Trading212Client:
         self.session = session or requests.Session()
 
     @classmethod
-    def from_env(cls, mode: str, *, session: requests.Session | None = None):
+    def from_env(
+        cls,
+        mode: str,
+        *,
+        session: requests.Session | None = None,
+        instruments_cache: str | Path | None = None,
+    ):
         return cls(
             mode,
             os.environ.get("T212_API_KEY", ""),
             os.environ.get("T212_API_SECRET", ""),
             session=session,
+            instruments_cache=instruments_cache,
         )
 
     def _request(self, method: str, path: str, **kwargs):
@@ -67,7 +90,7 @@ class Trading212Client:
                 method,
                 f"{self.base_url}{path}",
                 auth=self.auth,
-                timeout=15,
+                timeout=kwargs.pop("timeout", 15),
                 **kwargs,
             )
         except requests.RequestException as exc:
@@ -124,20 +147,51 @@ class Trading212Client:
             raise Trading212Error(f"{symbol!r} is not a supported stock symbol.")
         return f"{base}_{exchange}_EQ"
 
-    def resolve_instrument(self, symbol: str) -> dict[str, Any]:
-        expected = self._expected_ticker(symbol)
-        instruments = self._request("GET", "/equity/metadata/instruments")
+    def _instruments(self) -> list[Any]:
+        """The instrument list, cached on disk because it is large and rate limited."""
+        cache = self.instruments_cache
+        if cache is not None:
+            cache = cache.with_name(f"{cache.stem}_{self.mode}{cache.suffix}")
+        cached = None
+        if cache is not None and cache.is_file():
+            try:
+                cached = json.loads(cache.read_text())
+            except (OSError, ValueError):
+                cached = None
+            if isinstance(cached, list) and time.time() - cache.stat().st_mtime < _INSTRUMENTS_TTL_SECONDS:
+                return cached
+        try:
+            instruments = self._request("GET", "/equity/metadata/instruments", timeout=60)
+        except Trading212Error:
+            if isinstance(cached, list):
+                return cached
+            raise
         if not isinstance(instruments, list):
             raise Trading212Error("Trading 212 instruments response was not a list.")
+        if cache is not None:
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps(instruments))
+            except OSError:
+                pass
+        return instruments
+
+    def resolve_instrument(self, symbol: str) -> dict[str, Any]:
+        expected = self._expected_ticker(symbol)
+        instruments = self._instruments()
         matches = [
             item for item in instruments
             if isinstance(item, dict)
             and item.get("ticker") == expected
             and item.get("type") == "STOCK"
         ]
+        if not matches:
+            matches = find_instrument_matches(symbol, instruments)
         if len(matches) != 1:
+            candidates = ", ".join(str(item.get("ticker")) for item in matches[:5])
             raise Trading212Error(
-                f"Could not resolve {symbol} to one Trading 212 stock ({expected}); "
+                f"Could not resolve {symbol} to one Trading 212 stock "
+                f"(tried {expected}{'; candidates: ' + candidates if candidates else ''}); "
                 "no order was submitted."
             )
         if not isinstance(matches[0].get("ticker"), str) or not matches[0]["ticker"]:
@@ -184,6 +238,37 @@ class Trading212Client:
         if not isinstance(result, dict):
             raise Trading212Error("Trading 212 order response was not an object.")
         return result
+
+
+def find_instrument_matches(symbol: str, instruments: list[Any]) -> list[dict[str, Any]]:
+    """Match a Yahoo-style symbol to Trading 212 stocks by short name, ISIN and currency.
+
+    Trading 212 tickers do not follow the Yahoo pattern (London stocks look like
+    ``HSBAl_EQ``), so this matches on the base symbol and prefers the instruments
+    whose ISIN country or currency fits the symbol's exchange suffix.
+    """
+    cleaned = symbol.strip().upper()
+    suffix = next((suffix for suffix in _SUFFIX_HINTS if cleaned.endswith(suffix)), "")
+    base = cleaned[: -len(suffix)] if suffix else cleaned
+    hints = _SUFFIX_HINTS.get(suffix)
+    fitting, others = [], []
+    for item in instruments:
+        if not isinstance(item, dict) or item.get("type") != "STOCK":
+            continue
+        short = str(item.get("shortName", "")).upper()
+        ticker_base = str(item.get("ticker", "")).split("_")[0].upper()
+        names = {short, ticker_base}
+        if suffix == ".L":
+            names.add(ticker_base.removesuffix("L"))
+        if base not in names:
+            continue
+        isin_country = str(item.get("isin", ""))[:2]
+        if hints:
+            fits = isin_country in hints["isin"] or item.get("currencyCode") in hints["currencies"]
+        else:
+            fits = isin_country == "US" or item.get("currencyCode") == "USD"
+        (fitting if fits else others).append(item)
+    return fitting or others
 
 
 def _ensure_journal(db: sqlite3.Connection) -> None:
@@ -303,7 +388,10 @@ def execute_trade(
             "status": "skipped",
             "reason": "Set T212_API_KEY and T212_API_SECRET to enable Trading 212 execution.",
         }
-    client = client or Trading212Client.from_env(canonical_mode)
+    client = client or Trading212Client.from_env(
+        canonical_mode,
+        instruments_cache=Path(data_dir) / "trading212_instruments.json",
+    )
     instrument = client.resolve_instrument(symbol)
     ticker = instrument["ticker"]
     currency = (instrument.get("currencyCode") or "").upper()
