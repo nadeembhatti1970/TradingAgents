@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: helm-publish-${{ github.ref }}
@@ -26,12 +26,6 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Lint and package chart
-        run: |
-          helm lint ./helm/tradingagents
-          mkdir -p "$RUNNER_TEMP/chart"
-          helm package ./helm/tradingagents --destination "$RUNNER_TEMP/chart"
-
       - name: Log in to Docker Hub OCI registry
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -39,6 +33,35 @@ jobs:
         run: |
           printf '%s' "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io \
             --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Bump chart version if already published
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          chart_file=helm/tradingagents/Chart.yaml
+          version="$(sed -n 's/^version: *"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}$/\1/p' "$chart_file")"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported Helm chart version: ${version:-missing}" >&2
+            exit 1
+          fi
+          chart_ref="oci://registry-1.docker.io/$DOCKERHUB_USERNAME/tradingagents"
+          if helm show chart "$chart_ref" --version "$version" >/dev/null 2>&1; then
+            IFS=. read -r major minor patch <<< "$version"
+            new_version="$major.$minor.$((patch + 1))"
+            sed -i "s/^version: .*/version: $new_version/" "$chart_file"
+            sed -i "s/^appVersion: .*/appVersion: \"$new_version\"/" "$chart_file"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$chart_file"
+            git commit -m "chore(helm): bump chart to $new_version"
+            git push
+          fi
+
+      - name: Lint and package chart
+        run: |
+          helm lint ./helm/tradingagents
+          mkdir -p "$RUNNER_TEMP/chart"
+          helm package ./helm/tradingagents --destination "$RUNNER_TEMP/chart"
 
       - name: Push chart to Docker Hub
         env:
