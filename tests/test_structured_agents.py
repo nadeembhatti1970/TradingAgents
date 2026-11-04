@@ -547,3 +547,38 @@ def test_the_trader_names_the_levels_it_did_not_give():
     for field in ("Entry Price", "Stop Loss", "Limit Price", "Position Sizing"):
         assert field in rendered
     assert rendered.lower().count("not provided") == 4
+
+
+@pytest.mark.unit
+def test_invoke_structured_retries_then_returns_result():
+    from tradingagents.agents.structured import invoke_structured
+
+    replies = iter([None, ValueError("bad"), "ok"])
+
+    class _Llm:
+        def invoke(self, prompt):
+            reply = next(replies)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    assert invoke_structured(_Llm(), "p", "Trader") == "ok"
+
+
+@pytest.mark.unit
+def test_invoke_structured_logs_model_reply_and_falls_back(caplog):
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.runnables import RunnableLambda
+
+    from tradingagents.agents.structured import invoke_structured
+
+    llm = FakeListChatModel(responses=["I think you should buy."])
+    chain = llm | RunnableLambda(lambda _: None)
+
+    with caplog.at_level("WARNING"):
+        assert invoke_structured(chain, "p", "Trader", attempts=2) is None
+
+    text = caplog.text
+    assert "attempt 1/2 failed" in text and "attempt 2/2 failed" in text
+    assert "I think you should buy." in text
+    assert "falling back to free text" in text

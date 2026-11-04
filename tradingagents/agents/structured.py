@@ -22,9 +22,14 @@ import logging
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from langchain_core.tracers.context import collect_runs
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+# A structured call that fails (often a model replying in text instead of
+# calling the schema tool) is retried this many times before the free-text fallback.
+STRUCTURED_ATTEMPTS = 3
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -56,29 +61,65 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
         return None
 
 
-def invoke_structured(structured_llm: Any | None, prompt: Any, agent_name: str) -> T | None:
-    """Run the structured call; ``None`` when there is none or it fails.
+def _describe_llm_reply(runs: list[Any]) -> str:
+    """Summarise what the model actually returned, from the traced LLM child runs."""
+    stack = list(runs)
+    reply = ""
+    while stack:
+        run = stack.pop(0)
+        stack.extend(getattr(run, "child_runs", None) or [])
+        if getattr(run, "run_type", None) != "llm":
+            continue
+        try:
+            message = (run.outputs or {})["generations"][0][0]["message"]
+            kwargs = message.get("kwargs", message)
+            meta = kwargs.get("response_metadata") or {}
+            reply = (
+                f"finish_reason={meta.get('finish_reason')} "
+                f"model={meta.get('model_name')} "
+                f"tool_calls={len(kwargs.get('tool_calls') or [])} "
+                f"content={str(kwargs.get('content'))[:300]!r}"
+            )
+        except (KeyError, IndexError, TypeError, AttributeError):
+            reply = "reply unavailable"
+    return reply or "no LLM reply recorded"
+
+
+def invoke_structured(
+    structured_llm: Any | None,
+    prompt: Any,
+    agent_name: str,
+    attempts: int = STRUCTURED_ATTEMPTS,
+) -> T | None:
+    """Run the structured call; ``None`` when there is none or every attempt fails.
 
     ``prompt`` is whatever the underlying LLM accepts (a string for chat
     invocations, a list of message dicts for chat models that take that
     shape), so a caller can forward the same value to its free-text fallback.
+    Each attempt that fails logs what the model actually returned, and the call
+    is retried because a model may answer in plain text on one try and call
+    the schema tool on the next.
     """
     if structured_llm is None:
         return None
-    try:
-        result = structured_llm.invoke(prompt)
-        if result is None:
-            # A thinking model can answer in plain text instead of calling
-            # the tool, leaving the parser with nothing to return. Treat it
-            # as a structured miss and fall back, with a clear reason.
-            raise ValueError("structured output returned no parsed result")
-        return result
-    except Exception as exc:
-        logger.warning(
-            "%s: structured-output invocation failed (%s); retrying once as free text",
-            agent_name, exc,
-        )
-        return None
+    for attempt in range(1, max(attempts, 1) + 1):
+        with collect_runs() as collector:
+            try:
+                result = structured_llm.invoke(prompt)
+                if result is None:
+                    # A thinking model can answer in plain text instead of calling
+                    # the tool, leaving the parser with nothing to return. Treat it
+                    # as a structured miss, with a clear reason.
+                    raise ValueError("structured output returned no parsed result")
+                return result
+            except Exception as exc:
+                logger.warning(
+                    "%s: structured-output attempt %d/%d failed (%s); model reply: %s",
+                    agent_name, attempt, attempts, exc,
+                    _describe_llm_reply(collector.traced_runs),
+                )
+    logger.warning("%s: structured output unavailable; falling back to free text", agent_name)
+    return None
 
 
 def invoke_structured_or_freetext(
