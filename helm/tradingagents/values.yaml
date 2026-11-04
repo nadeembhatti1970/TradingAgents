@@ -25,7 +25,14 @@ config:
   tradeMode: practice
   maxBuyValue: "50"
   maxDailyBuyValue: "250"
-  extra: {}
+  # The CLI cannot prompt in a pod, so the LLM and run settings are required.
+  extra:
+    TRADINGAGENTS_LLM_PROVIDER: openrouter
+    TRADINGAGENTS_QUICK_THINK_LLM: deepseek/deepseek-v4.1-flash-1017
+    TRADINGAGENTS_DEEP_THINK_LLM: deepseek/deepseek-v4.1-flash-1017
+    TRADINGAGENTS_OUTPUT_LANGUAGE: English
+    TRADINGAGENTS_MAX_DEBATE_ROUNDS: "1"
+    TRADINGAGENTS_MAX_RISK_ROUNDS: "1"
 
 # Existing Secret holding the LLM provider keys and broker credentials,
 # e.g. OPENAI_API_KEY, ALPACA_API_KEY, ALPACA_SECRET_KEY.
