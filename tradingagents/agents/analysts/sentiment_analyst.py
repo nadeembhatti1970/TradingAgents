@@ -23,7 +23,11 @@ from datetime import datetime, timedelta
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.context import (
+    get_instrument_context_from_state,
+    get_language_instruction,
+    resolve_instrument_identity,
+)
 from tradingagents.agents.post_screen import jev_screen
 from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
 from tradingagents.agents.structured import (
@@ -32,6 +36,7 @@ from tradingagents.agents.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.vendors.extra_news import fetch_google_news, fetch_marketaux_news
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
     DEFAULT_SUBREDDITS,
@@ -47,6 +52,19 @@ _SOCIAL_OFF = "<unavailable: social sources are disabled; this is a news-only se
 def _social_enabled() -> bool:
     """TRADINGAGENTS_SENTIMENT_SOCIAL=false skips StockTwits/Reddit (e.g. for non-US tickers)."""
     return os.environ.get("TRADINGAGENTS_SENTIMENT_SOCIAL", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _extra_news_block(ticker: str, start_date: str, end_date: str) -> str:
+    """Marketaux scored news and UK Google News headlines, or "" when switched off."""
+    if os.environ.get("TRADINGAGENTS_SENTIMENT_EXTRA_NEWS", "true").strip().lower() in ("0", "false", "no", "off"):
+        return ""
+    name = resolve_instrument_identity(ticker).get("company_name")
+    query = f'"{name}" stock' if name else ticker
+    return (
+        f"#### Marketaux (per-article entity sentiment, -1 bearish to +1 bullish)\n"
+        f"{fetch_marketaux_news(ticker, start_date, end_date)}\n\n"
+        f"#### Google News UK (headlines)\n{fetch_google_news(query, start_date, end_date)}"
+    )
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -87,6 +105,8 @@ def create_sentiment_analyst(llm):
         else:
             stocktwits_block = reddit_block = _SOCIAL_OFF
 
+        extra_news_block = _extra_news_block(ticker, start_date, end_date)
+
         system_message = _build_system_message(
             ticker=ticker,
             start_date=start_date,
@@ -95,6 +115,7 @@ def create_sentiment_analyst(llm):
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
             subreddits=subreddits,
+            extra_news_block=extra_news_block,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -148,6 +169,7 @@ def _build_system_message(
     stocktwits_block: str,
     reddit_block: str,
     subreddits: tuple[str, ...] = DEFAULT_SUBREDDITS,
+    extra_news_block: str = "",
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     if subreddits == DEFAULT_SUBREDDITS:
@@ -156,6 +178,18 @@ def _build_system_message(
         character = f"r/{subreddits[0]} leans toward the coin's holders; r/CryptoCurrency and r/CryptoMarkets are broader"
     else:
         character = "r/CryptoCurrency and r/CryptoMarkets are broad crypto communities"
+    extra_news = (
+        f"""### Additional news — Marketaux and Google News UK, past 7 days
+Marketaux scores each article's sentiment for this instrument; weight high-relevance articles over passing mentions. Treat the scores as a model's estimate, and separate events from opinion as with the other news.
+
+<start_of_extra_news>
+{extra_news_block}
+<end_of_extra_news>
+
+"""
+        if extra_news_block
+        else ""
+    )
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
 
 ## Data sources (pre-fetched, in this prompt)
@@ -181,7 +215,7 @@ Community discussion, without vote or comment counts. Subreddit character matter
 {reddit_block}
 <end_of_reddit>
 
-## How to analyze this data (best practices)
+{extra_news}## How to analyze this data (best practices)
 
 1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone. A block headed "Screened by Jev" has had off-topic posts removed; its stance count is a classifier's read of every on-topic post fetched, labelled or not, of which the posts listed are a sample. Read it alongside the user tags.
 

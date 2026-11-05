@@ -5,6 +5,7 @@ project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 env_file="$project_dir/.env"
 namespace="tradingagents"
 secret_name="tradingagents-secrets"
+context=""
 
 usage() {
   cat <<'EOF'
@@ -12,13 +13,19 @@ Create or update the Kubernetes Secret from selected credentials in .env.
 
 Only API keys and broker credentials are copied; non-secret TRADINGAGENTS_*
 settings belong in the Helm values. At least one entry must have a value.
-Usage: ./create-k8s-secret.sh [--env-file PATH] [--namespace NAME] [--secret-name NAME]
+A value of the form ${OTHER_KEY} is replaced by OTHER_KEY's value from the file.
+Usage: ./create-k8s-secret.sh [--context NAME] [--env-file PATH] [--namespace NAME] [--secret-name NAME]
 Defaults: .env, namespace "tradingagents", secret "tradingagents-secrets".
 EOF
 }
 
 while (($#)); do
   case "$1" in
+    --context)
+      (($# >= 2)) || { echo "Missing value for --context" >&2; exit 2; }
+      context="$2"
+      shift 2
+      ;;
     --env-file)
       (($# >= 2)) || { echo "Missing value for --env-file" >&2; exit 2; }
       env_file="$2"
@@ -62,7 +69,7 @@ trap 'rm -f "$secret_env"' EXIT
 
 awk '
   BEGIN {
-    count = split("OPENAI_API_KEY GOOGLE_API_KEY ANTHROPIC_API_KEY XAI_API_KEY DEEPSEEK_API_KEY DASHSCOPE_API_KEY DASHSCOPE_CN_API_KEY ZHIPU_API_KEY ZHIPU_CN_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY OPENROUTER_API_KEY MISTRAL_API_KEY MOONSHOT_API_KEY GROQ_API_KEY NVIDIA_API_KEY OPENAI_COMPATIBLE_API_KEY TYPESAFE_API_KEY AWS_BEARER_TOKEN_BEDROCK FRED_API_KEY T212_API_KEY T212_API_SECRET", keys, " ")
+    count = split("OPENAI_API_KEY GOOGLE_API_KEY ANTHROPIC_API_KEY XAI_API_KEY DEEPSEEK_API_KEY DASHSCOPE_API_KEY DASHSCOPE_CN_API_KEY ZHIPU_API_KEY ZHIPU_CN_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY OPENROUTER_API_KEY MISTRAL_API_KEY MOONSHOT_API_KEY GROQ_API_KEY NVIDIA_API_KEY OPENAI_COMPATIBLE_API_KEY TYPESAFE_API_KEY AWS_BEARER_TOKEN_BEDROCK FRED_API_KEY MARKETAUX_API_KEY T212_API_KEY T212_API_SECRET", keys, " ")
     for (i = 1; i <= count; i++) allowed[keys[i]] = 1
   }
   {
@@ -83,6 +90,16 @@ awk '
     }
 
     value = substr(line, separator + 1)
+    raw[key] = value
+    if (match(value, /^\$\{[A-Z_0-9]+\}$/)) {
+      ref = substr(value, 3, length(value) - 3)
+      if (!(ref in raw) || raw[ref] == "") {
+        printf "%s references %s, which has no earlier value.\n", key, ref > "/dev/stderr"
+        failed = 1
+        next
+      }
+      value = raw[ref]
+    }
     if (value == "") next
     if (value ~ /^["\047]/) {
       printf "%s must use an unquoted KEY=value entry for Kubernetes env-file format.\n", key > "/dev/stderr"
@@ -103,10 +120,13 @@ awk '
   }
 ' "$env_file" > "$secret_env"
 
-kubectl create namespace "$namespace" --dry-run=client -o yaml |
-  kubectl apply -f -
+kubectl_args=()
+[[ -n "$context" ]] && kubectl_args+=(--context "$context")
 
-kubectl -n "$namespace" create secret generic "$secret_name" \
+kubectl "${kubectl_args[@]}" create namespace "$namespace" --dry-run=client -o yaml |
+  kubectl "${kubectl_args[@]}" apply -f -
+
+kubectl "${kubectl_args[@]}" -n "$namespace" create secret generic "$secret_name" \
   --from-env-file="$secret_env" \
   --dry-run=client -o yaml |
-  kubectl apply -f -
+  kubectl "${kubectl_args[@]}" apply -f -

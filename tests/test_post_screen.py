@@ -316,3 +316,47 @@ def test_social_sources_can_be_switched_off(monkeypatch):
     assert sentiment_analyst._social_enabled() is False
     monkeypatch.delenv("TRADINGAGENTS_SENTIMENT_SOCIAL")
     assert sentiment_analyst._social_enabled() is True
+
+
+def test_extra_news_block_and_prompt(monkeypatch):
+    from tradingagents.agents.analysts import sentiment_analyst as sa
+
+    monkeypatch.setattr(sa, "resolve_instrument_identity", lambda t: {"company_name": "AstraZeneca"})
+    monkeypatch.setattr(sa, "fetch_marketaux_news", lambda *a: "mx")
+    monkeypatch.setattr(sa, "fetch_google_news", lambda q, *a: f"gn:{q}")
+    block = sa._extra_news_block("AZN.L", "2026-10-29", "2026-11-05")
+    assert "mx" in block and 'gn:"AstraZeneca" stock' in block
+    msg = sa._build_system_message(
+        ticker="AZN.L", start_date="a", end_date="b", news_block="n",
+        stocktwits_block="s", reddit_block="r", extra_news_block=block,
+    )
+    assert "<start_of_extra_news>" in msg and "mx" in msg
+    monkeypatch.setenv("TRADINGAGENTS_SENTIMENT_EXTRA_NEWS", "false")
+    assert sa._extra_news_block("AZN.L", "a", "b") == ""
+
+
+def test_extra_news_vendors_parse_and_degrade(monkeypatch):
+    import json
+
+    from tradingagents.dataflows.vendors import extra_news as en
+
+    monkeypatch.delenv("MARKETAUX_API_KEY", raising=False)
+    assert "not set" in en.fetch_marketaux_news("AZN.L", "2026-10-29", "2026-11-05")
+    monkeypatch.setenv("MARKETAUX_API_KEY", "k")
+    payload = {"data": [
+        {"title": "Strong", "source": "x.com", "published_at": "2026-11-01T00:00:00Z",
+         "entities": [{"symbol": "AZN.L", "sentiment_score": 0.5, "match_score": 90}]},
+        {"title": "Other", "entities": [{"symbol": "BP.L", "sentiment_score": -1}]},
+    ]}
+    monkeypatch.setattr(en, "_get", lambda url, t: json.dumps(payload).encode())
+    out = en.fetch_marketaux_news("AZN.L", "2026-10-29", "2026-11-05")
+    assert "1 articles" in out and "+0.50 bullish" in out and "Other" not in out
+    rss = (b"<rss><channel><item><title>Headline A</title>"
+           b"<pubDate>Wed, 04 Nov 2026 10:00:00 GMT</pubDate></item>"
+           b"<item><title>Old</title><pubDate>Wed, 01 Jan 2025 10:00:00 GMT</pubDate></item>"
+           b"</channel></rss>")
+    monkeypatch.setattr(en, "_get", lambda url, t: rss)
+    out = en.fetch_google_news("AstraZeneca", "2026-10-29", "2026-11-05")
+    assert "Headline A" in out and "Old" not in out
+    monkeypatch.setattr(en, "_get", lambda url, t: (_ for _ in ()).throw(OSError()))
+    assert "unavailable" in en.fetch_google_news("x", "2026-10-29", "2026-11-05")
