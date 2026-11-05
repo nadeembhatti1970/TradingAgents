@@ -94,7 +94,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add helm/tradingagents/values.yaml helm/tradingagents/Chart.yaml
           git commit -m "chore(helm): publish image $IMAGE_TAG as chart $CHART_VERSION"
-          git push
+          # Another bot commit (e.g. a chart bump) may have landed since checkout.
+          for attempt in 1 2 3; do
+            git pull --rebase -X theirs origin "$GITHUB_REF_NAME" && git push && exit 0
+            sleep $((attempt * 3))
+          done
+          exit 1
 
       - name: Dispatch Helm chart publish
         env:
