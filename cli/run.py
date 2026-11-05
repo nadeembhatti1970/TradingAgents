@@ -444,6 +444,7 @@ def _execute_trading212(config: dict, selections: dict, final_state: dict):
         trade_date=selections["analysis_date"],
         action=action,
         limit_price=proposal.get("limit_price"),
+        entry_price=proposal.get("entry_price"),
         mode=config.get("trade_mode", "practice"),
         max_buy_value=config.get("t212_max_buy_value", 0.0),
         max_daily_buy_value=config.get("t212_max_daily_buy_value", 0.0),

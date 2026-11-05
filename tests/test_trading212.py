@@ -337,3 +337,41 @@ def test_london_symbol_prefers_london_line_over_adr_with_same_short_name():
         {"ticker": "AZNl_EQ", "type": "STOCK", "shortName": "AZN", "currencyCode": "GBX"},
     ]
     assert [i["ticker"] for i in find_instrument_matches("AZN.L", instruments)] == ["AZNl_EQ"]
+
+
+@pytest.mark.unit
+def test_sell_below_market_still_submits_so_a_loser_can_be_closed(tmp_path):
+    client = _Client(position={"quantityAvailableForTrading": 2.5, "currentPrice": 35})
+    result = execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Sell",
+        limit_price=30,
+        mode="practice",
+        max_buy_value=0,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert result["status"] == "submitted"
+    assert client.orders == [("AAPL_US_EQ", -2.5, 30)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [(25, 25), (35, 30), (None, 30), (0, 30), (float("nan"), 30)],
+)
+def test_buy_rests_at_a_lower_entry_price_but_never_above_the_limit(tmp_path, entry, expected):
+    client = _Client()
+    execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Buy",
+        limit_price=30,
+        entry_price=entry,
+        mode="practice",
+        max_buy_value=100,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert client.orders[0][2] == expected

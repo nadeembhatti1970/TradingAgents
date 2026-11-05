@@ -374,10 +374,24 @@ def execute_trade(
     max_buy_value: float,
     data_dir: str | Path,
     max_daily_buy_value: float = 0.0,
+    entry_price: float | None = None,
     client: Trading212Client | None = None,
 ) -> dict[str, Any]:
     """Submit one guarded limit order; returns an explicit skip or order receipt."""
     canonical_mode = normalize_trade_mode(mode)
+    # The limit is the most a buy may pay; resting at the proposal's lower entry
+    # keeps the pullback entry the debate agreed on instead of filling at the cap.
+    if (
+        action == "Buy"
+        and isinstance(entry_price, (int, float))
+        and not isinstance(entry_price, bool)
+        and math.isfinite(entry_price)
+        and entry_price > 0
+        and limit_price is not None
+        and math.isfinite(limit_price)
+        and entry_price < limit_price
+    ):
+        limit_price = float(entry_price)
     if action not in ("Buy", "Sell"):
         return {"status": "skipped", "reason": "The final decision is Hold or has no trade action."}
     if limit_price is None or not math.isfinite(limit_price) or limit_price <= 0:
@@ -469,14 +483,6 @@ def execute_trade(
             raise Trading212Error(
                 "Trading 212 did not return a valid current price for the open position."
             )
-        if limit_price < current_price:
-            return {
-                "status": "skipped",
-                "reason": (
-                    f"The sell limit ({limit_price:g}) is below Trading 212's current "
-                    f"position price ({current_price:g}); no order was submitted."
-                ),
-            }
         quantity = -available
         order_value = 0.0
 
