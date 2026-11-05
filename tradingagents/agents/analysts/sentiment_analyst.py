@@ -45,7 +45,6 @@ from tradingagents.dataflows.vendors.reddit import (
 )
 from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
 
-
 _SOCIAL_OFF = "<unavailable: social sources are disabled; this is a news-only sentiment read>"
 
 
