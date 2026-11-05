@@ -33,6 +33,8 @@ config:
     TRADINGAGENTS_OUTPUT_LANGUAGE: English
     TRADINGAGENTS_MAX_DEBATE_ROUNDS: "1"
     TRADINGAGENTS_MAX_RISK_ROUNDS: "1"
+    # Same-day reruns flipped ratings (RR.L Underweight, Underweight, then Overweight); cut sampling noise.
+    TRADINGAGENTS_TEMPERATURE: "0.0"
     # StockTwits and Reddit have no usable coverage of LSE tickers; news-only sentiment.
     TRADINGAGENTS_SENTIMENT_SOCIAL: "false"
     TYPESAFE_BASE_URL: https://openrouter.ai/api
