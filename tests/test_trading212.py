@@ -85,12 +85,12 @@ def test_buy_uses_capped_fractional_quantity_and_journals_submission(tmp_path):
         "mode": "practice",
         "ticker": "AAPL_US_EQ",
         "side": "Buy",
-        "quantity": 3.333333,
+        "quantity": 3.333,
         "limit_price": 30,
         "order_id": "123",
         "order_status": "NEW",
     }
-    assert client.orders == [("AAPL_US_EQ", 3.333333, 30)]
+    assert client.orders == [("AAPL_US_EQ", 3.333, 30)]
     duplicate = execute_trade(**options)
     assert duplicate["status"] == "skipped"
     assert "already submitted" in duplicate["reason"]

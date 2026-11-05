@@ -104,6 +104,9 @@ class Trading212Client:
                 if response.status_code == 403
                 else ""
             )
+            detail = " ".join((response.text or "").split())[:300]
+            if detail:
+                hint += f" [response: {detail}]"
             raise Trading212Error(
                 f"Trading 212 returned HTTP {response.status_code} for {method} {path}{hint}; "
                 "verify the account and order status before retrying."
@@ -344,7 +347,7 @@ def _quantity_for_buy(max_value: float, limit_price: float) -> float:
     if not math.isfinite(limit_price) or limit_price <= 0:
         raise Trading212Error("Trader did not provide a valid positive limit price.")
     quantity = (Decimal(str(max_value)) / Decimal(str(limit_price))).quantize(
-        Decimal("0.000001"), rounding=ROUND_DOWN
+        Decimal("0.001"), rounding=ROUND_DOWN
     )
     if quantity <= 0:
         raise Trading212Error("The configured buy cap is too small for one fractional share.")
