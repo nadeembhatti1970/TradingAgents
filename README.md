@@ -81,7 +81,7 @@ Our framework decomposes complex trading tasks into specialized roles.
 
 ### Analyst Team
 - Fundamentals Analyst: Evaluates company financials and performance metrics, identifying intrinsic values and potential red flags.
-- Sentiment Analyst: Aggregates news headlines, StockTwits, and Reddit chatter into a single sentiment read to gauge short-term market mood.
+- Sentiment Analyst: Aggregates news headlines (Yahoo Finance, plus Marketaux scored news and Google News UK), StockTwits, and Reddit chatter into a single sentiment read to gauge short-term market mood.
 - News Analyst: Monitors global news and macroeconomic indicators, interpreting the impact of events on market conditions.
 - Technical Analyst: Utilizes technical indicators (like MACD and RSI) to detect trading patterns and forecast price movements.
 
@@ -161,10 +161,10 @@ docker compose --profile ollama run --rm tradingagents-ollama
 
 The Helm chart in `helm/tradingagents` runs scheduled analyses as a CronJob. It is suspended by default, and trade mode defaults to `practice` with the Trading 212 buy cap at `0`, so nothing is ordered until you change both.
 
-Create the Secret from the API keys and broker credentials in your `.env` (the script copies only credential entries, skips empty ones, and never touches other settings), then install the chart:
+Create the Secret from the API keys and broker credentials in your `.env` (the script copies only credential entries, skips empty ones, and never touches other settings; a `KEY=${OTHER_KEY}` value is expanded to that key's value), then install the chart:
 
 ```bash
-./create-k8s-secret.sh              # --env-file, --namespace, --secret-name are optional
+./create-k8s-secret.sh              # uses the current kubectl context; --context, --env-file, --namespace, --secret-name are optional
 helm upgrade --install tradingagents oci://registry-1.docker.io/<dockerhub-user>/tradingagents \
   --namespace tradingagents \
   --set suspend=false \
@@ -217,6 +217,7 @@ export NVIDIA_API_KEY=...          # NVIDIA NIM
 export FRED_API_KEY=...            # FRED macro data (free, optional)
 export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 export TYPESAFE_API_KEY=...        # Jev social-post screening (optional)
+export MARKETAUX_API_KEY=...       # Marketaux scored news, covers LSE symbols (free tier, optional)
 ```
 
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials. With Docker, put these keys in `.env` instead: the image does not include `.env` files.
@@ -436,6 +437,8 @@ Each cell is scored on realized alpha against the instrument's regional benchmar
 TradingAgents is LLM-driven, so two runs of the same ticker and date can differ. This is expected for a research tool built on language models, not a defect. The variation comes from a few distinct sources, and it helps to separate them.
 
 Language model sampling is non-deterministic. Even at a fixed temperature, providers do not guarantee byte-identical output across calls, and reasoning models (the default GPT-6 family, and any thinking-mode model) vary the most because their internal reasoning is itself sampled.
+
+The Sentiment Analyst also reads Marketaux (per-article sentiment for the ticker, keeping only articles with relevance of at least 50/100; needs `MARKETAUX_API_KEY`) and Google News UK headlines. StockTwits and Reddit have little coverage of non-US tickers, so set `TRADINGAGENTS_SENTIMENT_SOCIAL=false` for a news-only read, or `TRADINGAGENTS_SENTIMENT_EXTRA_NEWS=false` to drop Marketaux and Google News.
 
 Live data moves. News, StockTwits, and Reddit return different content as time passes, so a run today sees different inputs than a run last week even for the same historical trade date. Pin the analysis date to hold the price and indicator window fixed, but the social and news sources still reflect "now".
 

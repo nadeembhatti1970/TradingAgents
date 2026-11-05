@@ -347,10 +347,12 @@ def test_extra_news_vendors_parse_and_degrade(monkeypatch):
         {"title": "Strong", "source": "x.com", "published_at": "2026-11-01T00:00:00Z",
          "entities": [{"symbol": "AZN.L", "sentiment_score": 0.5, "match_score": 90}]},
         {"title": "Other", "entities": [{"symbol": "BP.L", "sentiment_score": -1}]},
+        {"title": "Passing", "entities": [{"symbol": "AZN.L", "sentiment_score": -0.9, "match_score": 12}]},
     ]}
     monkeypatch.setattr(en, "_get", lambda url, t: json.dumps(payload).encode())
     out = en.fetch_marketaux_news("AZN.L", "2026-10-29", "2026-11-05")
-    assert "1 articles" in out and "+0.50 bullish" in out and "Other" not in out
+    assert "1 relevant articles (of 2" in out and "+0.50 bullish" in out
+    assert "Other" not in out and "Passing" not in out
     rss = (b"<rss><channel><item><title>Headline A</title>"
            b"<pubDate>Wed, 04 Nov 2026 10:00:00 GMT</pubDate></item>"
            b"<item><title>Old</title><pubDate>Wed, 01 Jan 2025 10:00:00 GMT</pubDate></item>"

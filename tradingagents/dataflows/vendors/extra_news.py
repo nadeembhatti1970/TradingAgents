@@ -26,6 +26,8 @@ _MARKETAUX = "https://api.marketaux.com/v1/news/all"
 _GOOGLE_NEWS = "https://news.google.com/rss/search"
 _UA = "Mozilla/5.0 (compatible; tradingagents)"
 _MAX_ITEMS = 15
+# Marketaux match_score is 0-100; below this an article only mentions the stock in passing.
+_MIN_RELEVANCE = 50.0
 
 
 def _get(url: str, timeout: float) -> bytes:
@@ -78,13 +80,18 @@ def fetch_marketaux_news(
         score = entity.get("sentiment_score")
         match = entity.get("match_score") or 0
         rows.append((float(match), score, article))
+    total = len(rows)
+    rows = [r for r in rows if r[0] >= _MIN_RELEVANCE]
     if not rows:
-        return f"<no Marketaux articles for {symbol} within {start_date}..{end_date}>"
+        return (
+            f"<no relevant Marketaux articles for {symbol} within {start_date}..{end_date} "
+            f"({total} fetched, all below relevance {_MIN_RELEVANCE:.0f}/100)>"
+        )
 
-    # The most relevant articles first: a low match score means a passing mention.
+    # The most relevant articles first.
     rows.sort(key=lambda r: r[0], reverse=True)
     scored = [float(s) for _, s, _ in rows if s is not None]
-    head = f"{len(rows)} articles"
+    head = f"{len(rows)} relevant articles (of {total}; relevance >= {_MIN_RELEVANCE:.0f}/100)"
     if scored:
         avg = sum(scored) / len(scored)
         head += f"; mean entity sentiment {avg:+.2f} ({_label(avg)}, scale -1 to +1)"
