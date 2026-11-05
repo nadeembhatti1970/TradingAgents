@@ -17,6 +17,7 @@ supports it and free text otherwise, so the band, score and confidence header
 reads the same across providers.
 """
 
+import os
 from datetime import datetime, timedelta
 
 from langchain_core.messages import AIMessage
@@ -38,6 +39,14 @@ from tradingagents.dataflows.vendors.reddit import (
     subreddits_for,
 )
 from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
+
+
+_SOCIAL_OFF = "<unavailable: social sources are disabled; this is a news-only sentiment read>"
+
+
+def _social_enabled() -> bool:
+    """TRADINGAGENTS_SENTIMENT_SOCIAL=false skips StockTwits/Reddit (e.g. for non-US tickers)."""
+    return os.environ.get("TRADINGAGENTS_SENTIMENT_SOCIAL", "true").strip().lower() not in ("0", "false", "no", "off")
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -66,14 +75,17 @@ def create_sentiment_analyst(llm):
         news_block = get_news.func(ticker, start_date, end_date)
         # Pass the analysis window so a historical run trims social posts to it
         # instead of leaking today's chatter into a backtest (#1220).
-        screen = jev_screen(ticker)
-        stocktwits_block = fetch_stocktwits_messages(
-            ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
-        )
         subreddits = subreddits_for(ticker)
-        reddit_block = fetch_reddit_posts(
-            ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
-        )
+        if _social_enabled():
+            screen = jev_screen(ticker)
+            stocktwits_block = fetch_stocktwits_messages(
+                ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
+            )
+            reddit_block = fetch_reddit_posts(
+                ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
+            )
+        else:
+            stocktwits_block = reddit_block = _SOCIAL_OFF
 
         system_message = _build_system_message(
             ticker=ticker,

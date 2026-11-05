@@ -33,6 +33,10 @@ config:
     TRADINGAGENTS_OUTPUT_LANGUAGE: English
     TRADINGAGENTS_MAX_DEBATE_ROUNDS: "1"
     TRADINGAGENTS_MAX_RISK_ROUNDS: "1"
+    # StockTwits and Reddit have no usable coverage of LSE tickers; news-only sentiment.
+    TRADINGAGENTS_SENTIMENT_SOCIAL: "false"
+    TYPESAFE_BASE_URL: https://openrouter.ai/api
+    TYPESAFE_DEFAULT_MODEL: jev-latest
 
 # Existing Secret holding the LLM provider keys and broker credentials,
 # e.g. OPENAI_API_KEY, ALPACA_API_KEY, ALPACA_SECRET_KEY.

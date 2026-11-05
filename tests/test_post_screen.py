@@ -307,3 +307,12 @@ def test_a_failure_does_not_wait_for_requests_still_in_flight(jev, monkeypatch):
 
     assert keep == [True, True] and "unavailable" in note
     assert elapsed < 2
+
+
+def test_social_sources_can_be_switched_off(monkeypatch):
+    from tradingagents.agents.analysts import sentiment_analyst
+
+    monkeypatch.setenv("TRADINGAGENTS_SENTIMENT_SOCIAL", "false")
+    assert sentiment_analyst._social_enabled() is False
+    monkeypatch.delenv("TRADINGAGENTS_SENTIMENT_SOCIAL")
+    assert sentiment_analyst._social_enabled() is True
