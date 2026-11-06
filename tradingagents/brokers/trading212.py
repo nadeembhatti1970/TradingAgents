@@ -247,6 +247,11 @@ class Trading212Client:
             raise Trading212Error("Trading 212 order response was not an object.")
         return result
 
+    def order_history(self, limit: int = 50) -> list[dict[str, Any]]:
+        result = self._request("GET", "/equity/history/orders", params={"limit": limit})
+        items = result.get("items") if isinstance(result, dict) else None
+        return [item["order"] for item in items or [] if isinstance(item, dict) and "order" in item]
+
 
 def find_instrument_matches(symbol: str, instruments: list[Any]) -> list[dict[str, Any]]:
     """Match a Yahoo-style symbol to Trading 212 stocks by short name, ISIN and currency.
@@ -327,7 +332,54 @@ def _journal_claim(
             "(execution_id, symbol, mode, status, value) VALUES (?, ?, ?, 'submitting', ?)",
             (execution_id, symbol, mode, value),
         )
+        if cursor.rowcount == 1:
+            return True
+        # A broker-confirmed rejection never reached the market, so it can be retried.
+        cursor = db.execute(
+            "UPDATE trading212_orders SET status = 'submitting', order_id = NULL, value = ?, "
+            "created_at = CURRENT_TIMESTAMP WHERE execution_id = ? AND status IN "
+            f"({','.join('?' * len(_RETRYABLE))})",
+            (value, execution_id, *_RETRYABLE),
+        )
         return cursor.rowcount == 1
+
+
+_RETRYABLE = ("REJECTED", "CANCELLED")
+
+
+def _journal_reconcile(path: Path, mode: str, client: Any) -> None:
+    """Mark journalled orders that Trading 212 rejected or cancelled unfilled."""
+    if not path.exists():
+        return
+    with sqlite3.connect(path) as db:
+        _ensure_journal(db)
+        pending = {
+            row[0]: row[1]
+            for row in db.execute(
+                "SELECT order_id, execution_id FROM trading212_orders WHERE mode = ? "
+                "AND status = 'submitted' AND order_id IS NOT NULL "
+                "AND date(created_at) = date('now')",
+                (mode,),
+            )
+        }
+        if not pending:
+            return
+        try:
+            history = client.order_history()
+        except Trading212Error:
+            return
+        for order in history:
+            execution_id = pending.get(str(order.get("id")))
+            status = str(order.get("status") or "").upper()
+            if (
+                execution_id
+                and status in _RETRYABLE
+                and not float(order.get("filledQuantity") or 0)
+            ):
+                db.execute(
+                    "UPDATE trading212_orders SET status = ?, value = 0 WHERE execution_id = ?",
+                    (status, execution_id),
+                )
 
 
 def _journal_update(path: Path, execution_id: str, status: str, order_id: str | None = None) -> None:
@@ -419,6 +471,7 @@ def execute_trade(
         canonical_mode,
         instruments_cache=Path(data_dir) / "trading212_instruments.json",
     )
+    _journal_reconcile(Path(data_dir) / "trading212_orders.sqlite", canonical_mode, client)
     instrument = client.resolve_instrument(symbol)
     ticker = instrument["ticker"]
     currency = (instrument.get("currencyCode") or "").upper()
@@ -486,9 +539,11 @@ def execute_trade(
         quantity = -available
         order_value = 0.0
 
-    execution_id = hashlib.sha256(
-        f"{symbol.upper()}:{trade_date}:{canonical_mode}".encode()
-    ).hexdigest()
+    # Sells have their own claim so an earlier buy never blocks closing a position.
+    claim_key = f"{symbol.upper()}:{trade_date}:{canonical_mode}"
+    if action == "Sell":
+        claim_key += ":sell"
+    execution_id = hashlib.sha256(claim_key.encode()).hexdigest()
     journal = Path(data_dir) / "trading212_orders.sqlite"
     if not _journal_claim(journal, execution_id, symbol, canonical_mode, order_value):
         return {

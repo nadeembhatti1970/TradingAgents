@@ -22,6 +22,10 @@ class _Client:
         self.currency = "USD"
         self.open_position = position
         self.orders = []
+        self.history = []
+
+    def order_history(self, limit=50):
+        return self.history
 
     def resolve_instrument(self, symbol):
         assert symbol == "AAPL"
@@ -375,3 +379,63 @@ def test_buy_rests_at_a_lower_entry_price_but_never_above_the_limit(tmp_path, en
         client=client,
     )
     assert client.orders[0][2] == expected
+
+
+def _opts(tmp_path, client, **extra):
+    return {
+        "symbol": "AAPL",
+        "trade_date": date.today().isoformat(),
+        "action": "Buy",
+        "limit_price": 30,
+        "mode": "practice",
+        "max_buy_value": 100,
+        "data_dir": tmp_path,
+        "client": client,
+        **extra,
+    }
+
+
+@pytest.mark.unit
+def test_rejected_order_is_released_and_can_be_retried(tmp_path):
+    client = _Client()
+    assert execute_trade(**_opts(tmp_path, client))["status"] == "submitted"
+    assert execute_trade(**_opts(tmp_path, client))["status"] == "skipped"
+
+    client.history = [{"id": 123, "status": "REJECTED", "filledQuantity": 0}]
+    retry = execute_trade(**_opts(tmp_path, client))
+
+    assert retry["status"] == "submitted"
+    assert len(client.orders) == 2
+
+
+@pytest.mark.unit
+def test_filled_or_open_order_stays_claimed(tmp_path):
+    client = _Client()
+    execute_trade(**_opts(tmp_path, client))
+    client.history = [{"id": 123, "status": "FILLED", "filledQuantity": 3.3}]
+
+    assert execute_trade(**_opts(tmp_path, client))["status"] == "skipped"
+    assert len(client.orders) == 1
+
+
+@pytest.mark.unit
+def test_rejected_order_stops_counting_toward_daily_cap(tmp_path):
+    client = _Client()
+    opts = _opts(tmp_path, client, max_daily_buy_value=100)
+    assert execute_trade(**opts)["status"] == "submitted"
+    client.history = [{"id": 123, "status": "REJECTED", "filledQuantity": 0}]
+    other = _opts(tmp_path, client, max_daily_buy_value=100)
+    # Same symbol is reclaimable, so the cap must have been freed to allow the order.
+    assert execute_trade(**other)["status"] == "submitted"
+
+
+@pytest.mark.unit
+def test_sell_is_allowed_after_same_day_buy(tmp_path):
+    client = _Client(position={"quantityAvailableForTrading": 3.333, "currentPrice": 30})
+    assert execute_trade(**_opts(tmp_path, client))["status"] == "submitted"
+
+    sold = execute_trade(**_opts(tmp_path, client, action="Sell"))
+
+    assert sold["status"] == "submitted"
+    assert client.orders[-1][1] == -3.333
+    assert execute_trade(**_opts(tmp_path, client, action="Sell"))["status"] == "skipped"
