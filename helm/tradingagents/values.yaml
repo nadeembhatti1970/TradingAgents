@@ -4,8 +4,8 @@ image:
   pullPolicy: IfNotPresent
 
 # One CronJob run analyses every ticker with today's date.
-schedule: "30 13 * * 1-5"
-timeZone: Etc/UTC
+schedule: "30 8 * * 1-5"
+timeZone: Europe/London
 suspend: false
 concurrencyPolicy: Forbid
 backoffLimit: 0
