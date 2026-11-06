@@ -362,3 +362,22 @@ def test_extra_news_vendors_parse_and_degrade(monkeypatch):
     assert "Headline A" in out and "Old" not in out
     monkeypatch.setattr(en, "_get", lambda url, t: (_ for _ in ()).throw(OSError()))
     assert "unavailable" in en.fetch_google_news("x", "2026-10-29", "2026-11-05")
+
+
+@pytest.mark.unit
+def test_stats_handler_sums_openrouter_cost():
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from cli.stats_handler import StatsCallbackHandler
+
+    handler = StatsCallbackHandler()
+    result = LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="x"))]],
+        llm_output={"token_usage": {"cost": 0.002}},
+    )
+    handler.on_llm_end(result)
+    handler.on_llm_end(LLMResult(generations=[[ChatGeneration(message=AIMessage(content="y"))]]))
+    handler.on_llm_end(result)
+
+    assert handler.get_stats()["cost_usd"] == pytest.approx(0.004)

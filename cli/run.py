@@ -410,9 +410,31 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
             "decision text below and judge it yourself.[/yellow]\n"
         )
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
+    _log_run_cost(config, selections, stats_handler.get_stats())
 
     _offer_reports(final_state, graph, selections["ticker"],
                    save=flags.get("save"), show=flags.get("show"), html=flags.get("html"))
+
+
+def _log_run_cost(config: dict, selections: dict, stats: dict) -> None:
+    """Print the run's LLM spend and append it to costs.jsonl beside the reports."""
+    record = {
+        "ticker": selections["ticker"],
+        "date": selections["analysis_date"],
+        **stats,
+        "cost_usd": round(stats["cost_usd"], 6),
+    }
+    console.print(
+        f"[dim]LLM cost {record['ticker']}: ${record['cost_usd']:.4f} "
+        f"({stats['llm_calls']} calls, {stats['tokens_in']} in / {stats['tokens_out']} out tokens)[/dim]"
+    )
+    try:
+        path = Path(config["results_dir"]) / "costs.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        console.print(f"[yellow]Could not write the cost log: {exc}[/yellow]")
 
 
 def _execute_trading212(config: dict, selections: dict, final_state: dict):

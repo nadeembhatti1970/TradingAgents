@@ -4,7 +4,10 @@ image:
   pullPolicy: IfNotPresent
 
 # One CronJob run analyses every ticker with today's date.
-schedule: "30 8 * * 1-5"
+# DeepSeek 1017 on OpenRouter costs double 01:00-04:00 and 06:00-10:00 UTC on weekdays.
+# 11:00 London starts at or after 10:00 UTC all year, so a ~75 minute run stays at the standard price
+# and finishes well before the 16:30 LSE close.
+schedule: "0 11 * * 1-5"
 timeZone: Europe/London
 suspend: false
 concurrencyPolicy: Forbid
@@ -18,6 +21,8 @@ run:
   topN: 10
   tickers: ["NVDA"]
   analysts: "market,social,news,fundamentals"
+  # Skip tickers that already finished an analysis today (e.g. a manual job after the schedule).
+  skipCompleted: true
 
 # Non-secret TRADINGAGENTS_* settings. Real-money trading requires
 # tradeMode: real and a non-zero maxBuyValue; both default to the safe values.

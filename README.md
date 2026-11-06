@@ -174,7 +174,8 @@ helm upgrade --install tradingagents oci://registry-1.docker.io/<dockerhub-user>
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `schedule`, `timeZone` | `30 13 * * 1-5`, `Etc/UTC` | When the job runs |
+| `schedule`, `timeZone` | `0 11 * * 1-5`, `Europe/London` | When the job runs; 11:00 London is never before 10:00 UTC, which avoids OpenRouter's weekday peak pricing for DeepSeek 1017 |
+| `run.skipCompleted` | `true` | Skip tickers already analysed today, so a manual job does not repeat paid analysis |
 | `suspend` | `true` | Set `false` to enable the schedule |
 | `run.tickers`, `run.analysts` | `[NVDA]`, all four | What each run analyses, dated today |
 | `run.etf`, `run.topN` | `ISF.L`, `10` | When `etf` is set, analyse that ETF's `topN` largest holdings (`tradingagents etf-holdings`) instead of `tickers`; Yahoo lists at most ~10 per fund |
@@ -184,6 +185,8 @@ helm upgrade --install tradingagents oci://registry-1.docker.io/<dockerhub-user>
 | `config.extra` | `{}` | Further `TRADINGAGENTS_*` settings, as a map |
 | `secrets.existingSecret` | `tradingagents-secrets` | Secret loaded as environment variables |
 | `persistence.*` | 2Gi PVC | Keeps results, memory log and cache at `~/.tradingagents` |
+
+Each ticker's LLM cost is printed in the job log (`LLM cost <ticker>: $…`) and appended to `costs.jsonl` in the logs volume.
 
 Run once without waiting for the schedule: `kubectl -n tradingagents create job --from=cronjob/tradingagents manual-run`.
 

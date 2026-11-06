@@ -37,6 +37,13 @@ spec:
                   tickers={{ join " " .Values.run.tickers | quote }}
                   {{- end }}
                   for ticker in $tickers; do
+                    {{- if .Values.run.skipCompleted }}
+                    # A finished analysis today already placed or declined its order; rerunning only spends tokens.
+                    if ls /home/appuser/.tradingagents/logs/reports/"$ticker"_"$(date +%Y%m%d)"_*/6_execution/execution.md >/dev/null 2>&1; then
+                      echo "Skipping $ticker: already analysed today"
+                      continue
+                    fi
+                    {{- end }}
                     tradingagents --ticker "$ticker" --date "$(date +%F)" \
                       --analysts {{ .Values.run.analysts | quote }} \
                       --save --no-show || status=1

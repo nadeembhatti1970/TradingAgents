@@ -16,6 +16,7 @@ class StatsCallbackHandler(BaseCallbackHandler):
         self.tool_calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
+        self.cost_usd = 0.0
 
     def on_llm_start(
         self,
@@ -39,6 +40,13 @@ class StatsCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         """Extract token usage from LLM response."""
+        # OpenRouter reports the billed cost in the usage block of each response.
+        token_usage = (response.llm_output or {}).get("token_usage")
+        cost = token_usage.get("cost") if isinstance(token_usage, dict) else None
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            with self._lock:
+                self.cost_usd += float(cost)
+
         try:
             generation = response.generations[0][0]
         except (IndexError, TypeError):
@@ -73,4 +81,5 @@ class StatsCallbackHandler(BaseCallbackHandler):
                 "tool_calls": self.tool_calls,
                 "tokens_in": self.tokens_in,
                 "tokens_out": self.tokens_out,
+                "cost_usd": self.cost_usd,
             }
