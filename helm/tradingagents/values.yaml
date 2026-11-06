@@ -12,7 +12,7 @@ timeZone: Europe/London
 suspend: false
 concurrencyPolicy: Forbid
 backoffLimit: 0
-activeDeadlineSeconds: 7200
+activeDeadlineSeconds: 10800
 
 run:
   # When etf is set, the topN largest holdings of that ETF are analysed
