@@ -20,6 +20,18 @@ run:
   etf: "ISF.L"
   topN: 10
   tickers: ["NVDA"]
+  # Used when the ETF holdings feed fails or returns fewer than topN names.
+  fallbackTickers:
+    - AZN.L
+    - HSBA.L
+    - SHEL.L
+    - ULVR.L
+    - RR.L
+    - BP.L
+    - BATS.L
+    - GSK.L
+    - RIO.L
+    - LLOY.L
   analysts: "market,social,news,fundamentals"
   # Skip tickers that already finished an analysis today (e.g. a manual job after the schedule).
   skipCompleted: true
@@ -40,6 +52,10 @@ config:
     TRADINGAGENTS_MAX_RISK_ROUNDS: "1"
     # Same-day reruns flipped ratings (RR.L Underweight, Underweight, then Overweight); cut sampling noise.
     TRADINGAGENTS_TEMPERATURE: "0.0"
+    # Bound a model that otherwise emits 200k-300k output tokens per run.
+    TRADINGAGENTS_MAX_TOKENS: "8192"
+    # Give the agents the practice/live account's cash and positions.
+    TRADINGAGENTS_T212_AUTO_PORTFOLIO: "true"
     # StockTwits and Reddit have no usable coverage of LSE tickers; news-only sentiment.
     TRADINGAGENTS_SENTIMENT_SOCIAL: "false"
     TYPESAFE_BASE_URL: https://openrouter.ai/api

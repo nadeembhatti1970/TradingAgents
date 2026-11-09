@@ -72,6 +72,9 @@ Write these sections, in this order, starting with the rating on its own line:
 - **Rating**: exactly one of Buy / Overweight / Hold / Underweight / Sell
 - **Executive Summary**: the call and how to act on it
 - **Investment Thesis**: the evidence that decided it, and what would change it
+- **Trade Now**: yes only if the desk should place the order on this run at the current market; no if the call is to wait for a pullback or a better entry
+- **Order Type**: market for an exit now; limit for a staged or into-strength order
+- **Entry Price**, **Stop Loss**, **Limit Price**, **Position Sizing**: the levels the desk should use, or omit a level you cannot state
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
@@ -81,9 +84,13 @@ Write these sections, in this order, starting with the rating on its own line:
         if decision is not None:
             final_trade_decision = render_pm_decision(decision)
             final_rating = decision.rating.value
+            final_execution = decision.model_dump(mode="json")
         else:
             final_trade_decision = llm.invoke(prompt).content
             final_rating = parse_rating(final_trade_decision)
+            # A provider without structured output cannot give the executor
+            # typed levels; the Trader's proposal remains the fallback.
+            final_execution = None
 
         new_risk_debate_state = {
             "history": risk_debate_state["history"],
@@ -101,6 +108,7 @@ Write these sections, in this order, starting with the rating on its own line:
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
             "final_rating": final_rating,
+            "final_execution": final_execution,
         }
 
     return portfolio_manager_node

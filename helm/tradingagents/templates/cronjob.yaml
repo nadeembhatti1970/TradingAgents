@@ -16,6 +16,9 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          # The trading pod calls no Kubernetes API; the projected service-account
+          # volume is what failed to mount on 2026-11-09 and killed the job.
+          automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
@@ -32,20 +35,24 @@ spec:
                 - |
                   status=0
                   {{- if .Values.run.etf }}
-                  tickers="$(tradingagents etf-holdings {{ .Values.run.etf | quote }} --top {{ .Values.run.topN }})" || exit 1
+                  tickers="$(tradingagents etf-holdings {{ .Values.run.etf | quote }} --top {{ .Values.run.topN }})" || tickers=""
+                  if [ -z "$tickers" ] || [ "$(echo "$tickers" | wc -w)" -lt {{ .Values.run.topN }} ]; then
+                    echo "ETF holdings unavailable or incomplete; using fallback tickers"
+                    tickers={{ join " " .Values.run.fallbackTickers | quote }}
+                  fi
                   {{- else }}
                   tickers={{ join " " .Values.run.tickers | quote }}
                   {{- end }}
+                  if [ -z "$tickers" ]; then
+                    echo "No tickers to analyse"
+                    exit 1
+                  fi
                   for ticker in $tickers; do
-                    {{- if .Values.run.skipCompleted }}
-                    # A finished analysis today already placed or declined its order; rerunning only spends tokens.
-                    if ls /home/appuser/.tradingagents/logs/reports/"$ticker"_"$(date +%Y%m%d)"_*/6_execution/execution.md >/dev/null 2>&1; then
-                      echo "Skipping $ticker: already analysed today"
-                      continue
-                    fi
-                    {{- end }}
+                    # --skip-completed makes the one-run-per-ticker/date guard
+                    # part of the run rather than a shell convention.
                     tradingagents --ticker "$ticker" --date "$(date +%F)" \
                       --analysts {{ .Values.run.analysts | quote }} \
+                      {{ if .Values.run.skipCompleted }}--skip-completed{{ end }} \
                       --save --no-show || status=1
                   done
                   exit $status

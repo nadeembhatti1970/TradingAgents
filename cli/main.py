@@ -63,6 +63,11 @@ def analyze(
         "--trade-mode",
         help="Execution mode for any outbound trade actions: practice/practise/paper or real/live.",
     ),
+    skip_completed: bool = typer.Option(
+        False,
+        "--skip-completed",
+        help="Skip this ticker/date if a completed report already exists.",
+    ),
     save: bool | None = typer.Option(
         None, "--save/--no-save", help="Save the report under results_dir without asking"
     ),
@@ -99,6 +104,7 @@ def analyze(
             "date": date,
             "analysts": analysts,
             "trade_mode": normalize_trade_mode(trade_mode) if trade_mode is not None else None,
+            "skip_completed": skip_completed,
             "save": save,
             "show": show,
             "html": html,

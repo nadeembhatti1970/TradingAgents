@@ -26,7 +26,12 @@ from cli.display import (
 from cli.selections import depth_from_env, get_user_selections, unattended_gaps
 from cli.stats_handler import StatsCallbackHandler
 from tradingagents.agents.rating import is_review, run_rating
-from tradingagents.brokers.trading212 import Trading212Error, action_for_rating, execute_trade
+from tradingagents.brokers.trading212 import (
+    Trading212Client,
+    Trading212Error,
+    action_for_rating,
+    execute_trade,
+)
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import (
@@ -42,6 +47,37 @@ def _run_directory(config: dict, ticker: str, trade_date: str) -> Path:
     ".." here would place the run outside the results directory.
     """
     return Path(config["results_dir"]) / safe_ticker_component(ticker) / trade_date
+
+
+def _completed_report(config: dict, ticker: str, trade_date: str) -> Path | None:
+    """The day's finished report for this ticker, if one already exists.
+
+    A second run of the same ticker/date spends tokens and can place a trade
+    that the first run's decision log does not describe. ``--skip-completed``
+    turns this from a shell convention into a guard the run itself enforces.
+    """
+    reports = Path(config["results_dir"]) / "reports"
+    stamp = trade_date.replace("-", "")
+    for path in reports.glob(f"{safe_ticker_component(ticker)}_{stamp}_*"):
+        if (path / "6_execution" / "execution.md").is_file():
+            return path
+    return None
+
+
+def _live_portfolio(config: dict):
+    """The broker account's cash and positions, when the caller asked for them.
+
+    A broker outage or a key without the positions scope must not end a run:
+    the agents simply see the explicit "portfolio not provided" state.
+    """
+    if not config.get("t212_auto_portfolio"):
+        return None
+    try:
+        client = Trading212Client.from_env(config.get("trade_mode", "practice"))
+        return client.portfolio_context()
+    except Exception as exc:
+        console.print(f"[yellow]Portfolio context unavailable: {exc}[/yellow]")
+        return None
 
 
 def _announce_checkpoint_state(graph, ticker: str, trade_date: str) -> None:
@@ -114,6 +150,22 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
     selections = get_user_selections(flags)
 
     config = _build_run_config(selections, checkpoint)
+
+    if flags.get("skip_completed"):
+        completed = _completed_report(
+            config, selections["ticker"], selections["analysis_date"]
+        )
+        if completed is not None:
+            console.print(
+                f"[yellow]{selections['ticker']} on {selections['analysis_date']} "
+                f"already has a completed report ({completed.name}); skipping.[/yellow]"
+            )
+            return
+
+    # A caller-supplied portfolio wins; otherwise the broker account is read
+    # only when TRADINGAGENTS_T212_AUTO_PORTFOLIO enables it.
+    if portfolio is None:
+        portfolio = _live_portfolio(config)
 
     stats_handler = StatsCallbackHandler()
 
@@ -438,35 +490,66 @@ def _log_run_cost(config: dict, selections: dict, stats: dict) -> None:
 
 
 def _execute_trading212(config: dict, selections: dict, final_state: dict):
-    """Execute only a typed Trader proposal confirmed by the final portfolio rating."""
+    """Execute the final portfolio decision, falling back to the Trader's plan.
+
+    The Portfolio Manager is the final decision-maker, so its typed execution
+    levels and ``trade_now`` gate the order. The Trader's proposal is used only
+    when the provider could not return structured output for the PM.
+    """
     if selections.get("asset_type") != "stock":
         return {
             "status": "skipped",
             "reason": "Trading 212 execution is only enabled for stocks.",
         }
-    proposal = final_state.get("trader_proposal")
-    if not isinstance(proposal, dict):
-        return {
-            "status": "skipped",
-            "reason": "The Trader did not return a validated structured proposal.",
-        }
     action = action_for_rating(final_state.get("final_rating", ""))
     if action is None:
         return {"status": "skipped", "reason": "The final decision is Hold or has no trade action."}
-    if proposal.get("action") != action:
-        return {
-            "status": "skipped",
-            "reason": (
-                "The Trader proposal and final portfolio decision disagree; "
-                "no order was submitted."
-            ),
-        }
+
+    execution = final_state.get("final_execution")
+    if isinstance(execution, dict):
+        if not execution.get("trade_now", True):
+            return {
+                "status": "skipped",
+                "reason": "The final decision is to wait for a better entry; no order was submitted.",
+            }
+        limit_price = execution.get("limit_price")
+        entry_price = execution.get("entry_price")
+        stop_loss = execution.get("stop_loss")
+        order_type = execution.get("order_type") or "limit"
+    else:
+        proposal = final_state.get("trader_proposal")
+        if not isinstance(proposal, dict):
+            return {
+                "status": "skipped",
+                "reason": "The Trader did not return a validated structured proposal.",
+            }
+        if proposal.get("action") != action:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "The Trader proposal and final portfolio decision disagree; "
+                    "no order was submitted."
+                ),
+            }
+        limit_price = proposal.get("limit_price")
+        entry_price = proposal.get("entry_price")
+        stop_loss = proposal.get("stop_loss")
+        order_type = "limit"
+
+    # A buy needs a maximum price for the quantity; the entry is the natural
+    # fallback when the PM gave a level but no separate limit.
+    if action == "Buy" and limit_price is None and entry_price is not None:
+        limit_price = entry_price
+
     return execute_trade(
         symbol=selections["ticker"],
         trade_date=selections["analysis_date"],
         action=action,
-        limit_price=proposal.get("limit_price"),
-        entry_price=proposal.get("entry_price"),
+        limit_price=limit_price,
+        entry_price=entry_price,
+        order_type=order_type,
+        stop_loss=stop_loss,
+        rest_at_entry=False,
         mode=config.get("trade_mode", "practice"),
         max_buy_value=config.get("t212_max_buy_value", 0.0),
         max_daily_buy_value=config.get("t212_max_daily_buy_value", 0.0),

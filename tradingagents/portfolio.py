@@ -28,6 +28,13 @@ class Position(BaseModel):
     ticker: str = Field(description="Instrument symbol, e.g. AAPL")
     quantity: float = Field(description="Signed units held; negative is short")
     average_price: float | None = Field(default=None, description="Average entry price per unit")
+    broker_ticker: str | None = Field(
+        default=None,
+        description=(
+            "How the broker lists the instrument, when it differs from the symbol the "
+            "analysis uses (e.g. RRl_EQ for RR.L). Display only; matching uses ticker."
+        ),
+    )
 
 
 class PortfolioContext(BaseModel):
@@ -55,8 +62,9 @@ class PortfolioContext(BaseModel):
         lines = []
         for position in held:
             price = f", average price {position.average_price:,.2f}" if position.average_price is not None else ""
-            spelled = position.ticker.strip().upper()
-            listed = f" (listed as {position.ticker})" if spelled != symbol else ""
+            listed_as = position.broker_ticker or position.ticker
+            spelled = listed_as.strip().upper()
+            listed = f" (listed as {listed_as})" if spelled != symbol else ""
             lines.append(f"- Current position in {symbol}: {position.quantity:,.4g} units{price}{listed}")
         if not held:
             lines.append(f"- No current position in {symbol}")
@@ -64,7 +72,8 @@ class PortfolioContext(BaseModel):
             lines.append(f"- Cash available: {self.cash:,.2f}{' ' + self.currency if self.currency else ''}")
         others = [p for p in self.positions if all(p is not h for h in held)]
         if others:
-            lines.append("- Other positions: " + ", ".join(f"{p.ticker.upper()} {p.quantity:,.4g}" for p in others))
+            lines.append("- Other positions: " + ", ".join(
+                f"{(p.broker_ticker or p.ticker).upper()} {p.quantity:,.4g}" for p in others))
         return "Portfolio at the analysis date:\n" + "\n".join(lines)
 
     def fingerprint(self) -> str:

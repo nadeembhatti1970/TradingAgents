@@ -20,6 +20,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_TRADE_MODE":           "trade_mode",
     "TRADINGAGENTS_T212_MAX_BUY_VALUE":    "t212_max_buy_value",
     "TRADINGAGENTS_T212_MAX_DAILY_BUY_VALUE": "t212_max_daily_buy_value",
+    "TRADINGAGENTS_T212_AUTO_PORTFOLIO":   "t212_auto_portfolio",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
@@ -135,6 +136,10 @@ def build_default_config() -> dict:
         "t212_max_buy_value": 0.0,
         # Total buy value allowed per day across all orders; 0 disables this cap.
         "t212_max_daily_buy_value": 0.0,
+        # Read the broker account's cash and positions into every analysis so
+        # the portfolio agents size against the real book. Opt-in: a run should
+        # not query a broker unless the caller asked it to.
+        "t212_auto_portfolio": False,
         "deep_think_llm": "gpt-6-sol",
         "quick_think_llm": "gpt-6-luna",
         # When None, each provider's client falls back to its own default endpoint

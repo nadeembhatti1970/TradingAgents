@@ -16,6 +16,7 @@ from typing import Any
 import requests
 
 from tradingagents.default_config import normalize_trade_mode
+from tradingagents.portfolio import PortfolioContext, Position
 
 _BASE_URLS = {
     "practice": "https://demo.trading212.com/api/v0",
@@ -228,6 +229,57 @@ class Trading212Client:
             raise Trading212Error(f"Trading 212 returned duplicate positions for {ticker}.")
         return matches[0] if matches else None
 
+    def positions(self) -> list[dict[str, Any]]:
+        """Every open position, for the agents' portfolio context."""
+        result = self._request("GET", "/equity/positions")
+        if not isinstance(result, list):
+            raise Trading212Error("Trading 212 positions response was not a list.")
+        return [item for item in result if isinstance(item, dict)]
+
+    def portfolio_context(self) -> PortfolioContext:
+        """The account's cash and positions in the symbols the analyses use.
+
+        The broker lists London lines as ``RRl_EQ`` and US lines as
+        ``AAPL_US_EQ``; the agents compare holdings with Yahoo-style symbols
+        such as ``RR.L`` and ``AAPL``. ``broker_ticker`` keeps the raw listing
+        for display while ``ticker`` is the matched symbol.
+        """
+        account = self.account_details()
+        positions: list[Position] = []
+        for item in self.positions():
+            instrument = item.get("instrument")
+            if not isinstance(instrument, dict):
+                continue
+            ticker = instrument.get("ticker")
+            if not isinstance(ticker, str) or not ticker:
+                continue
+            try:
+                quantity = float(item.get("quantity") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(quantity) or quantity == 0:
+                continue
+            average = item.get("averagePricePaid")
+            try:
+                average_price = float(average) if average is not None else None
+            except (TypeError, ValueError):
+                average_price = None
+            if average_price is not None and not math.isfinite(average_price):
+                average_price = None
+            positions.append(
+                Position(
+                    ticker=symbol_from_t212(ticker, instrument.get("currencyCode")),
+                    quantity=quantity,
+                    average_price=average_price,
+                    broker_ticker=ticker,
+                )
+            )
+        return PortfolioContext(
+            cash=account["available_to_trade"],
+            currency=account["currency"],
+            positions=positions,
+        )
+
     def place_limit_order(self, ticker: str, quantity: float, limit_price: float):
         if not math.isfinite(quantity) or quantity == 0:
             raise Trading212Error("Order quantity must be a non-zero finite number.")
@@ -247,10 +299,71 @@ class Trading212Client:
             raise Trading212Error("Trading 212 order response was not an object.")
         return result
 
+    def place_market_order(self, ticker: str, quantity: float):
+        """Execute at the current market; used for an exit that must happen now."""
+        if not math.isfinite(quantity) or quantity == 0:
+            raise Trading212Error("Order quantity must be a non-zero finite number.")
+        result = self._request(
+            "POST",
+            "/equity/orders/market",
+            json={"ticker": ticker, "quantity": quantity},
+        )
+        if not isinstance(result, dict):
+            raise Trading212Error("Trading 212 order response was not an object.")
+        return result
+
+    def place_stop_order(self, ticker: str, quantity: float, stop_price: float):
+        """A resting stop order; best effort alongside the position opened by a buy."""
+        if not math.isfinite(quantity) or quantity == 0:
+            raise Trading212Error("Order quantity must be a non-zero finite number.")
+        if not math.isfinite(stop_price) or stop_price <= 0:
+            raise Trading212Error("Order stop price must be a positive finite number.")
+        result = self._request(
+            "POST",
+            "/equity/orders/stop",
+            json={
+                "ticker": ticker,
+                "quantity": quantity,
+                "stopPrice": stop_price,
+                "timeValidity": "GTC",
+            },
+        )
+        if not isinstance(result, dict):
+            raise Trading212Error("Trading 212 order response was not an object.")
+        return result
+
     def order_history(self, limit: int = 50) -> list[dict[str, Any]]:
         result = self._request("GET", "/equity/history/orders", params={"limit": limit})
         items = result.get("items") if isinstance(result, dict) else None
         return [item["order"] for item in items or [] if isinstance(item, dict) and "order" in item]
+
+
+def symbol_from_t212(ticker: str, currency: str | None = None) -> str:
+    """Map a Trading 212 listing to the Yahoo-style symbol the analyses use.
+
+    London lines carry an ``l`` marker before ``_EQ`` (``RRl_EQ`` -> ``RR.L``);
+    other venues use an exchange suffix (``AAPL_US_EQ`` -> ``AAPL``,
+    ``0700_HK_EQ`` -> ``0700.HK``). The broker currency resolves ambiguous
+    cases; a missing suffix is left alone rather than guessed.
+    """
+    raw = str(ticker).strip()
+    cleaned = raw.upper()
+    if not cleaned:
+        return cleaned
+    core = cleaned[:-3] if cleaned.endswith("_EQ") else cleaned
+    currency = (currency or "").strip().upper()
+    # London lines carry a lowercase l before _EQ (RRl_EQ), which the uppercase
+    # form would confuse with a US ticker ending in L (AAPL).
+    if currency in ("GBX", "GBP") or raw.endswith("l_EQ"):
+        base = core[:-1] if core.endswith("L") else core
+        return f"{base}.L" if base else cleaned
+    for suffix, yahoo in (
+        ("_US", ""), ("_HK", ".HK"), ("_T", ".T"), ("_TO", ".TO"),
+        ("_AX", ".AX"), ("_SS", ".SS"), ("_SZ", ".SZ"),
+    ):
+        if core.endswith(suffix):
+            return f"{core[:-len(suffix)]}{yahoo}"
+    return core
 
 
 def find_instrument_matches(symbol: str, instruments: list[Any]) -> list[dict[str, Any]]:
@@ -427,14 +540,27 @@ def execute_trade(
     data_dir: str | Path,
     max_daily_buy_value: float = 0.0,
     entry_price: float | None = None,
+    order_type: str = "limit",
+    stop_loss: float | None = None,
+    rest_at_entry: bool = False,
     client: Trading212Client | None = None,
 ) -> dict[str, Any]:
-    """Submit one guarded limit order; returns an explicit skip or order receipt."""
+    """Submit one guarded order; returns an explicit skip or order receipt.
+
+    A buy uses the stated limit as its maximum, so a limit above the market is
+    marketable instead of being lowered to a pullback target that the broker
+    rejects or never fills. ``rest_at_entry`` restores the old pullback
+    behaviour for callers that deliberately want a resting entry. A sell with
+    ``order_type="market"`` uses the market endpoint; otherwise both sides use
+    a limit order. A buy may carry a best-effort stop-loss order.
+    """
     canonical_mode = normalize_trade_mode(mode)
-    # The limit is the most a buy may pay; resting at the proposal's lower entry
-    # keeps the pullback entry the debate agreed on instead of filling at the cap.
+    if order_type not in ("market", "limit"):
+        return {"status": "skipped", "reason": "Order type must be market or limit."}
+    # Opt-in pullback behaviour; the default keeps the explicit limit as the cap.
     if (
-        action == "Buy"
+        rest_at_entry
+        and action == "Buy"
         and isinstance(entry_price, (int, float))
         and not isinstance(entry_price, bool)
         and math.isfinite(entry_price)
@@ -446,7 +572,12 @@ def execute_trade(
         limit_price = float(entry_price)
     if action not in ("Buy", "Sell"):
         return {"status": "skipped", "reason": "The final decision is Hold or has no trade action."}
-    if limit_price is None or not math.isfinite(limit_price) or limit_price <= 0:
+    sells_at_market = action == "Sell" and order_type == "market"
+    if limit_price is not None and (
+        not math.isfinite(limit_price) or limit_price <= 0
+    ):
+        return {"status": "skipped", "reason": "No valid action limit price was provided."}
+    if limit_price is None and not sells_at_market:
         return {"status": "skipped", "reason": "No valid action limit price was provided."}
     if trade_date != date.today().isoformat():
         return {"status": "skipped", "reason": "Orders are only allowed for today's analysis date."}
@@ -555,19 +686,40 @@ def execute_trade(
         }
 
     try:
-        receipt = client.place_limit_order(ticker, quantity, float(limit_price))
+        if sells_at_market:
+            receipt = client.place_market_order(ticker, quantity)
+        else:
+            receipt = client.place_limit_order(ticker, quantity, float(limit_price))
     except Exception:
         _journal_update(journal, execution_id, "uncertain")
         raise
     order_id = str(receipt.get("id")) if receipt.get("id") is not None else None
     _journal_update(journal, execution_id, "submitted", order_id)
-    return {
+    result = {
         "status": "submitted",
         "mode": canonical_mode,
         "ticker": ticker,
         "side": action,
         "quantity": quantity,
-        "limit_price": float(limit_price),
+        "limit_price": float(limit_price) if limit_price is not None else None,
         "order_id": order_id,
         "order_status": receipt.get("status"),
     }
+    if action == "Buy" and stop_loss is not None:
+        try:
+            stop_value = float(stop_loss)
+        except (TypeError, ValueError):
+            stop_value = None
+        if stop_value is None or not math.isfinite(stop_value) or stop_value <= 0:
+            result["stop_error"] = "No valid stop-loss price was provided."
+        else:
+            try:
+                stop = client.place_stop_order(ticker, -quantity, stop_value)
+                result["stop_order"] = {
+                    "order_id": str(stop.get("id")) if stop.get("id") is not None else None,
+                    "status": stop.get("status"),
+                    "stop_price": stop_value,
+                }
+            except Exception as exc:  # a failed stop must not hide the filled buy
+                result["stop_error"] = str(exc)
+    return result

@@ -268,8 +268,54 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    trade_now: bool = Field(
+        default=True,
+        description=(
+            "Whether this decision authorises an order at the current market on "
+            "this run. Set false when the decision is to wait for a pullback or a "
+            "better entry; the executor will then place no order. Hold decisions "
+            "place no order regardless."
+        ),
+    )
+    order_type: Literal["market", "limit"] = Field(
+        default="limit",
+        description=(
+            "How to execute. Use 'market' for an exit now. Use 'limit' for a "
+            "staged order at a stated level; a buy limit above the market is "
+            "marketable, while a sell limit above the market rests until reached."
+        ),
+    )
+    entry_price: float | None = Field(
+        default=None,
+        description=(
+            "Optional target entry price in the instrument's quote currency, "
+            "never a percentage or a range."
+        ),
+    )
+    stop_loss: float | None = Field(
+        default=None,
+        description=(
+            "Optional stop-loss price in the instrument's quote currency. For a "
+            "long, the executor attempts to place a sell-stop at this level after "
+            "the buy order."
+        ),
+    )
+    limit_price: float | None = Field(
+        default=None,
+        description=(
+            "Optional absolute limit price in the instrument's quote currency. "
+            "For Buy this is the maximum price to pay; for Sell the minimum price "
+            "to accept. Omit it for a market sell."
+        ),
+    )
+    position_sizing: str | None = Field(
+        default=None,
+        description="Optional sizing guidance, e.g. '10% of portfolio'.",
+    )
 
-    @field_validator("price_target", mode="before")
+    @field_validator(
+        "price_target", "entry_price", "stop_loss", "limit_price", mode="before"
+    )
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
@@ -295,6 +341,18 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
     parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
+    parts.extend(["", f"**Trade Now**: {'yes' if decision.trade_now else 'no'}"])
+    parts.extend(["", f"**Order Type**: {decision.order_type}"])
+    for label, value in (
+        ("Entry Price", decision.entry_price),
+        ("Stop Loss", decision.stop_loss),
+        ("Limit Price", decision.limit_price),
+        ("Position Sizing", decision.position_sizing),
+    ):
+        parts.extend([
+            "",
+            f"**{label}**: {value if value is not None and value != '' else 'not provided'}",
+        ])
     return "\n".join(parts)
 
 

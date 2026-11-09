@@ -540,6 +540,29 @@ def test_a_field_the_model_did_not_give_says_so():
 
 
 @pytest.mark.unit
+def test_the_pm_renders_the_execution_plan_the_executor_uses():
+    from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating, render_pm_decision
+
+    rendered = render_pm_decision(PortfolioDecision(
+        rating=PortfolioRating.OVERWEIGHT,
+        executive_summary="s",
+        investment_thesis="t",
+        trade_now=False,
+        order_type="market",
+        entry_price=100,
+        stop_loss=95,
+        limit_price=101,
+        position_sizing="10% of portfolio",
+    ))
+    assert "**Trade Now**: no" in rendered
+    assert "**Order Type**: market" in rendered
+    assert "**Entry Price**: 100.0" in rendered
+    assert "**Stop Loss**: 95.0" in rendered
+    assert "**Limit Price**: 101.0" in rendered
+    assert "**Position Sizing**: 10% of portfolio" in rendered
+
+
+@pytest.mark.unit
 def test_the_trader_names_the_levels_it_did_not_give():
     from tradingagents.agents.schemas import TraderAction, TraderProposal, render_trader_proposal
 

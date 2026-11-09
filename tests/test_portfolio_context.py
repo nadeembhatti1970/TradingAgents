@@ -60,6 +60,17 @@ def test_a_holding_under_a_broker_alias_is_the_analyzed_instrument(held, analyze
 
 
 @pytest.mark.unit
+def test_a_broker_ticker_is_shown_beside_the_matched_symbol():
+    book = PortfolioContext.model_validate({"positions": [{
+        "ticker": "RR.L", "quantity": 3.846, "average_price": 1273.798,
+        "broker_ticker": "RRl_EQ",
+    }]})
+    text = book.render("RR.L")
+    assert "Current position in RR.L: 3.846 units" in text
+    assert "listed as RRl_EQ" in text
+
+
+@pytest.mark.unit
 def test_absent_context_is_reported_as_not_provided():
     notice = get_portfolio_context_from_state({"company_of_interest": "AAPL"})
     assert "not provided" in notice.lower()

@@ -30,6 +30,7 @@ def test_no_arguments_still_runs_an_analysis(runner):
         "date": None,
         "analysts": None,
         "trade_mode": None,
+        "skip_completed": False,
         "save": None,
         "show": None,
         "html": None,

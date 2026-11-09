@@ -37,6 +37,7 @@ class Propagator:
             "memory_note": "",
             "portfolio_context": portfolio_context,
             "trader_proposal": None,
+            "final_execution": None,
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",

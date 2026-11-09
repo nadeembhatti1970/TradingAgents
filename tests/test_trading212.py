@@ -9,6 +9,7 @@ from tradingagents.brokers.trading212 import (
     Trading212Error,
     action_for_rating,
     execute_trade,
+    symbol_from_t212,
 )
 
 
@@ -22,10 +23,16 @@ class _Client:
         self.currency = "USD"
         self.open_position = position
         self.orders = []
+        self.market_orders = []
+        self.stop_orders = []
         self.history = []
+        self.positions_data = []
 
     def order_history(self, limit=50):
         return self.history
+
+    def positions(self):
+        return list(self.positions_data)
 
     def resolve_instrument(self, symbol):
         assert symbol == "AAPL"
@@ -41,6 +48,14 @@ class _Client:
     def place_limit_order(self, ticker, quantity, limit_price):
         self.orders.append((ticker, quantity, limit_price))
         return {"id": 123, "status": "NEW"}
+
+    def place_market_order(self, ticker, quantity):
+        self.market_orders.append((ticker, quantity))
+        return {"id": 456, "status": "NEW"}
+
+    def place_stop_order(self, ticker, quantity, stop_price):
+        self.stop_orders.append((ticker, quantity, stop_price))
+        return {"id": 789, "status": "NEW"}
 
 
 @pytest.mark.unit
@@ -344,6 +359,62 @@ def test_london_symbol_prefers_london_line_over_adr_with_same_short_name():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("ticker", "currency", "expected"),
+    [
+        ("RRl_EQ", "GBX", "RR.L"),
+        ("BPl_EQ", "GBX", "BP.L"),
+        ("AZNl_EQ", "GBX", "AZN.L"),
+        ("AAPL_US_EQ", "USD", "AAPL"),
+        ("0700_HK_EQ", "HKD", "0700.HK"),
+        ("7203_T_EQ", "JPY", "7203.T"),
+        ("SHOP_TO_EQ", "CAD", "SHOP.TO"),
+        ("BHP_AX_EQ", "AUD", "BHP.AX"),
+        ("AAPL", "USD", "AAPL"),
+        ("AAPL", None, "AAPL"),
+        ("RRl_EQ", None, "RR.L"),
+    ],
+)
+def test_t212_listings_map_to_the_yahoo_symbols_the_agents_use(ticker, currency, expected):
+    assert symbol_from_t212(ticker, currency) == expected
+
+
+class _PortfolioClient(Trading212Client):
+    def __init__(self):
+        super().__init__("practice", "key", "secret")
+
+    def account_details(self):
+        return {"currency": "GBP", "available_to_trade": 100.0}
+
+    def positions(self):
+        return [
+            {
+                "instrument": {"ticker": "RRl_EQ", "type": "STOCK", "currencyCode": "GBX"},
+                "quantity": 3.846,
+                "averagePricePaid": 1273.798,
+            },
+            {
+                "instrument": {"ticker": "AAPL_US_EQ", "type": "STOCK", "currencyCode": "USD"},
+                "quantity": 2,
+                "averagePricePaid": 150.0,
+            },
+        ]
+
+
+@pytest.mark.unit
+def test_live_portfolio_maps_broker_tickers_to_the_analysed_symbols():
+    book = _PortfolioClient().portfolio_context()
+
+    assert book.cash == 100.0 and book.currency == "GBP"
+    rr = book.position_in("RR.L")
+    assert rr is not None and rr.quantity == 3.846
+    assert rr.broker_ticker == "RRl_EQ"
+    assert "Current position in RR.L" in book.render("RR.L")
+    assert "listed as RRl_EQ" in book.render("RR.L")
+    assert book.position_in("AAPL").quantity == 2
+
+
+@pytest.mark.unit
 def test_sell_below_market_still_submits_so_a_loser_can_be_closed(tmp_path):
     client = _Client(position={"quantityAvailableForTrading": 2.5, "currentPrice": 35})
     result = execute_trade(
@@ -365,7 +436,7 @@ def test_sell_below_market_still_submits_so_a_loser_can_be_closed(tmp_path):
     ("entry", "expected"),
     [(25, 25), (35, 30), (None, 30), (0, 30), (float("nan"), 30)],
 )
-def test_buy_rests_at_a_lower_entry_price_but_never_above_the_limit(tmp_path, entry, expected):
+def test_buy_rests_at_a_lower_entry_price_only_when_explicitly_requested(tmp_path, entry, expected):
     client = _Client()
     execute_trade(
         symbol="AAPL",
@@ -373,12 +444,95 @@ def test_buy_rests_at_a_lower_entry_price_but_never_above_the_limit(tmp_path, en
         action="Buy",
         limit_price=30,
         entry_price=entry,
+        rest_at_entry=True,
         mode="practice",
         max_buy_value=100,
         data_dir=tmp_path,
         client=client,
     )
     assert client.orders[0][2] == expected
+
+
+@pytest.mark.unit
+def test_buy_uses_the_explicit_limit_by_default_even_when_an_entry_is_lower(tmp_path):
+    """The entry is a target, not the order cap; lowering the limit to it made
+    several pullback orders non-marketable and the broker rejected them."""
+    client = _Client()
+    execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Buy",
+        limit_price=30,
+        entry_price=25,
+        mode="practice",
+        max_buy_value=100,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert client.orders == [("AAPL_US_EQ", 3.333, 30)]
+
+
+@pytest.mark.unit
+def test_market_sell_uses_the_market_endpoint_and_needs_no_limit(tmp_path):
+    client = _Client(position={"quantityAvailableForTrading": 2.5, "currentPrice": 35})
+    result = execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Sell",
+        limit_price=None,
+        order_type="market",
+        mode="practice",
+        max_buy_value=0,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert result["status"] == "submitted"
+    assert result["limit_price"] is None
+    assert client.orders == []
+    assert client.market_orders == [("AAPL_US_EQ", -2.5)]
+
+
+@pytest.mark.unit
+def test_a_requested_stop_is_placed_best_effort_after_the_buy(tmp_path):
+    client = _Client()
+    result = execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Buy",
+        limit_price=30,
+        stop_loss=25,
+        mode="practice",
+        max_buy_value=100,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert result["status"] == "submitted"
+    assert client.orders == [("AAPL_US_EQ", 3.333, 30)]
+    assert client.stop_orders == [("AAPL_US_EQ", -3.333, 25.0)]
+    assert result["stop_order"]["stop_price"] == 25.0
+
+
+@pytest.mark.unit
+def test_a_failed_stop_does_not_hide_a_submitted_buy(tmp_path):
+    client = _Client()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("stop rejected")
+
+    client.place_stop_order = fail
+    result = execute_trade(
+        symbol="AAPL",
+        trade_date=date.today().isoformat(),
+        action="Buy",
+        limit_price=30,
+        stop_loss=25,
+        mode="practice",
+        max_buy_value=100,
+        data_dir=tmp_path,
+        client=client,
+    )
+    assert result["status"] == "submitted"
+    assert "stop rejected" in result["stop_error"]
 
 
 def _opts(tmp_path, client, **extra):
@@ -439,3 +593,77 @@ def test_sell_is_allowed_after_same_day_buy(tmp_path):
     assert sold["status"] == "submitted"
     assert client.orders[-1][1] == -3.333
     assert execute_trade(**_opts(tmp_path, client, action="Sell"))["status"] == "skipped"
+
+
+@pytest.mark.unit
+def test_executor_uses_the_portfolio_managers_typed_execution(tmp_path, monkeypatch):
+    """The PM is the final decision; its levels and trade_now gate the order,
+    not the Trader proposal that the debate may have overruled."""
+    from cli import run
+
+    captured = {}
+
+    def fake_execute(**kwargs):
+        captured.update(kwargs)
+        return {"status": "submitted"}
+
+    monkeypatch.setattr(run, "execute_trade", fake_execute)
+    result = run._execute_trading212(
+        {
+            "trade_mode": "practice",
+            "t212_max_buy_value": 100,
+            "t212_max_daily_buy_value": 0,
+            "data_cache_dir": str(tmp_path),
+        },
+        {"asset_type": "stock", "ticker": "AAPL", "analysis_date": "2026-01-01"},
+        {
+            "final_rating": "Buy",
+            "final_execution": {
+                "trade_now": True,
+                "order_type": "market",
+                "limit_price": 105,
+                "entry_price": 100,
+                "stop_loss": 95,
+            },
+            "trader_proposal": {"action": "Sell", "limit_price": 90},
+        },
+    )
+
+    assert result["status"] == "submitted"
+    assert captured["action"] == "Buy"
+    assert captured["limit_price"] == 105
+    assert captured["stop_loss"] == 95
+    assert captured["order_type"] == "market"
+    assert captured["rest_at_entry"] is False
+
+
+@pytest.mark.unit
+def test_executor_places_nothing_when_the_pm_says_wait(monkeypatch):
+    from cli import run
+
+    called = []
+    monkeypatch.setattr(run, "execute_trade", lambda **kwargs: called.append(kwargs))
+    result = run._execute_trading212(
+        {"trade_mode": "practice"},
+        {"asset_type": "stock", "ticker": "AAPL", "analysis_date": "2026-01-01"},
+        {
+            "final_rating": "Overweight",
+            "final_execution": {"trade_now": False, "order_type": "limit", "limit_price": 100},
+        },
+    )
+
+    assert result["status"] == "skipped"
+    assert "wait" in result["reason"].lower()
+    assert called == []
+
+
+@pytest.mark.unit
+def test_completed_report_guard_matches_only_the_same_day(tmp_path):
+    from cli.run import _completed_report
+
+    execution = tmp_path / "reports" / "AAPL_20260101_120000" / "6_execution"
+    execution.mkdir(parents=True)
+    (execution / "execution.md").write_text("{}", encoding="utf-8")
+
+    assert _completed_report({"results_dir": str(tmp_path)}, "AAPL", "2026-01-01") is not None
+    assert _completed_report({"results_dir": str(tmp_path)}, "AAPL", "2026-01-02") is None
