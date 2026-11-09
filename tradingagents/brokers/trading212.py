@@ -117,10 +117,15 @@ class Trading212Client:
         except ValueError as exc:
             raise Trading212Error(f"Trading 212 returned invalid JSON for {method} {path}.") from exc
 
-    def account_details(self) -> dict[str, Any]:
+    def account_summary(self) -> dict[str, Any]:
+        """The raw account summary, for the performance scoreboard."""
         summary = self._request("GET", "/equity/account/summary")
         if not isinstance(summary, dict):
             raise Trading212Error("Trading 212 account summary response was not an object.")
+        return summary
+
+    def account_details(self) -> dict[str, Any]:
+        summary = self.account_summary()
         currency = summary.get("currency")
         if not isinstance(currency, str) or not currency.strip():
             raise Trading212Error("Trading 212 account summary did not include its primary currency.")
@@ -332,10 +337,24 @@ class Trading212Client:
             raise Trading212Error("Trading 212 order response was not an object.")
         return result
 
-    def order_history(self, limit: int = 50) -> list[dict[str, Any]]:
+    def order_history_details(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Completed-order items, keeping the fill alongside each order."""
         result = self._request("GET", "/equity/history/orders", params={"limit": limit})
         items = result.get("items") if isinstance(result, dict) else None
-        return [item["order"] for item in items or [] if isinstance(item, dict) and "order" in item]
+        return [
+            item for item in items or []
+            if isinstance(item, dict) and "order" in item
+        ]
+
+    def order_history(self, limit: int = 50) -> list[dict[str, Any]]:
+        return [item["order"] for item in self.order_history_details(limit)]
+
+    def pending_orders(self) -> list[dict[str, Any]]:
+        """Orders currently resting with the broker."""
+        result = self._request("GET", "/equity/orders")
+        if not isinstance(result, list):
+            raise Trading212Error("Trading 212 pending-orders response was not a list.")
+        return [item for item in result if isinstance(item, dict)]
 
 
 def symbol_from_t212(ticker: str, currency: str | None = None) -> str:

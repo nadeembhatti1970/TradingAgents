@@ -1,5 +1,6 @@
 import sys
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -12,6 +13,7 @@ from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG, normalize_trade_mode
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
+from tradingagents.performance import build_report
 from tradingagents.portfolio import load_portfolio
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -190,6 +192,61 @@ def backtest(
         console.print(f"[yellow]failed:[/yellow] {ticker} {date}: {reason}")
     for ticker, reason in result.settlement_failures:
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
+
+
+@app.command()
+def performance(
+    holding_days: str = typer.Option(
+        "1,5,20", "--holding-days",
+        help="Comma-separated forward windows in trading days, e.g. 1,5,20",
+    ),
+    position_value: float = typer.Option(
+        0.0, "--position-value",
+        help="Position size for the cost-per-position estimate; 0 uses T212_MAX_BUY_VALUE",
+    ),
+    broker: bool = typer.Option(
+        False, "--broker/--no-broker",
+        help="Include the Trading 212 account, positions and order history",
+    ),
+    memory_log: str = typer.Option(
+        None, "--memory-log", help="Memory log to score; defaults to the configured path"
+    ),
+    results_dir: str = typer.Option(
+        None, "--results-dir", help="Results directory holding costs.jsonl and reports/"
+    ),
+    save: bool = typer.Option(
+        False, "--save/--no-save", help="Write performance.md under the results directory"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the scoreboard as JSON instead of markdown"
+    ),
+):
+    """Score every logged decision forward at the requested holding windows."""
+    try:
+        windows = tuple(sorted({int(part) for part in holding_days.split(",") if part.strip()}))
+    except ValueError:
+        console.print("[red]--holding-days must be comma-separated integers, e.g. 1,5,20[/red]")
+        raise typer.Exit(code=1) from None
+    if not windows or any(day < 1 or day > 252 for day in windows):
+        console.print("[red]--holding-days must be between 1 and 252 trading days[/red]")
+        raise typer.Exit(code=1) from None
+
+    config = DEFAULT_CONFIG.copy()
+    if memory_log:
+        config["memory_log_path"] = memory_log
+    if results_dir:
+        config["results_dir"] = results_dir
+    report = build_report(config, windows, position_value=position_value, broker=broker)
+
+    if json_output:
+        console.print_json(data=report.as_dict())
+    else:
+        console.print(report.render())
+    if save:
+        path = Path(config["results_dir"]) / "performance.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report.render() + "\n", encoding="utf-8")
+        console.print(f"\n[green]Performance report saved to:[/green] {path.resolve()}")
 
 
 # The plans `login` and `logout` take: the providers signed in to, not keyed.

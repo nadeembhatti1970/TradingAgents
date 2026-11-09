@@ -667,3 +667,29 @@ def test_completed_report_guard_matches_only_the_same_day(tmp_path):
 
     assert _completed_report({"results_dir": str(tmp_path)}, "AAPL", "2026-01-01") is not None
     assert _completed_report({"results_dir": str(tmp_path)}, "AAPL", "2026-01-02") is None
+
+
+@pytest.mark.unit
+def test_client_exposes_account_pending_and_fill_details():
+    summary_session = _Session({
+        "totalValue": 100.0,
+        "currency": "GBP",
+        "cash": {"availableToTrade": 10.0},
+        "investments": {"currentValue": 90.0},
+    })
+    client = Trading212Client("practice", "k", "s", session=summary_session)
+    assert client.account_summary()["totalValue"] == 100.0
+    assert client.account_details() == {"currency": "GBP", "available_to_trade": 10.0}
+
+    pending_session = _Session([{"id": 1, "ticker": "AAPL_US_EQ", "status": "NEW"}])
+    pending = Trading212Client("practice", "k", "s", session=pending_session)
+    assert pending.pending_orders() == [{"id": 1, "ticker": "AAPL_US_EQ", "status": "NEW"}]
+
+    details_session = _Session({
+        "items": [{"order": {"id": 2, "status": "FILLED"}, "fill": {"price": 12.5}}]
+    })
+    details = Trading212Client("practice", "k", "s", session=details_session)
+    assert details.order_history_details() == [
+        {"order": {"id": 2, "status": "FILLED"}, "fill": {"price": 12.5}}
+    ]
+    assert details.order_history() == [{"id": 2, "status": "FILLED"}]

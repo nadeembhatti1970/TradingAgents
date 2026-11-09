@@ -55,6 +55,9 @@ spec:
                       {{ if .Values.run.skipCompleted }}--skip-completed{{ end }} \
                       --save --no-show || status=1
                   done
+                  # Measurement, not trading: refresh the forward scoreboard and
+                  # the broker snapshot even if an analysis failed.
+                  tradingagents performance --save --broker || true
                   exit $status
               envFrom:
                 - configMapRef:
