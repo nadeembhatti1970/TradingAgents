@@ -1,6 +1,6 @@
 image:
   repository: nadeembhatti/tradingagents
-  tag: sha-b79649f7526e9fd93b6858e78bb5a4cfab3ebb2a
+  tag: sha-2394495abfe52ed826d7e4d95d4b657c67cfd5dc
   pullPolicy: IfNotPresent
 
 # One CronJob run analyses every ticker with today's date.
