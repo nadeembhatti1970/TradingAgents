@@ -208,6 +208,10 @@ def performance(
         False, "--broker/--no-broker",
         help="Include the Trading 212 account, positions and order history",
     ),
+    trend_overlay: bool = typer.Option(
+        False, "--trend-overlay/--no-trend-overlay",
+        help="Apply the 200-day/relative-strength overlay to the logged ratings",
+    ),
     memory_log: str = typer.Option(
         None, "--memory-log", help="Memory log to score; defaults to the configured path"
     ),
@@ -236,7 +240,10 @@ def performance(
         config["memory_log_path"] = memory_log
     if results_dir:
         config["results_dir"] = results_dir
-    report = build_report(config, windows, position_value=position_value, broker=broker)
+    report = build_report(
+        config, windows, position_value=position_value, broker=broker,
+        trend_overlay=trend_overlay,
+    )
 
     if json_output:
         console.print_json(data=report.as_dict())

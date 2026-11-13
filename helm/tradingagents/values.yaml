@@ -4,10 +4,13 @@ image:
   pullPolicy: IfNotPresent
 
 # One CronJob run analyses every ticker with today's date.
-# DeepSeek 1017 on OpenRouter costs double 01:00-04:00 and 06:00-10:00 UTC on weekdays.
-# 11:00 London starts at or after 10:00 UTC all year, so a ~75 minute run stays at the standard price
-# and finishes well before the 16:30 LSE close.
-schedule: "0 11 * * 1-5"
+# Weekly, Monday 11:00 London: a daily re-decision was flipping ratings and the
+# 20-day/60-day thesis does not need a daily run. The five-day scoreboard is a
+# smoke test; the gate is 20 days. DeepSeek 1017 on OpenRouter costs double
+# 01:00-04:00 and 06:00-10:00 UTC on weekdays; 11:00 London starts at or after
+# 10:00 UTC all year, so a ~75 minute run stays at the standard price and
+# finishes well before the 16:30 LSE close.
+schedule: "0 11 * * 1"
 timeZone: Europe/London
 suspend: false
 concurrencyPolicy: Forbid

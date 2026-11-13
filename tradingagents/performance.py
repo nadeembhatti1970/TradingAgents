@@ -19,6 +19,12 @@ from tradingagents.agents.rating import RATING_REVIEW
 from tradingagents.brokers.trading212 import symbol_from_t212
 from tradingagents.memory import TradingMemoryLog
 from tradingagents.memory.settlement import fetch_returns, resolve_benchmark
+from tradingagents.trend import (
+    TrendState,
+    apply_trend_overlay,
+    rating_weight,
+    trend_state,
+)
 
 _DIRECTION = {"Buy": 1, "Overweight": 1, "Hold": 0, "Underweight": -1, "Sell": -1}
 _RATING_ORDER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
@@ -37,6 +43,16 @@ class RatingScore:
 
 
 @dataclass
+class BasketScore:
+    label: str
+    n: int
+    weight: float
+    mean_raw: float
+    mean_alpha: float
+    mean_net: float
+
+
+@dataclass
 class ScoreRow:
     ticker: str
     date: str
@@ -47,6 +63,9 @@ class ScoreRow:
     resolution: str | None = None
     source: str = "pending"
     error: str | None = None
+    original_rating: str | None = None
+    trend: str | None = None
+    target_weight: float | None = None
 
 
 @dataclass
@@ -87,6 +106,55 @@ class WindowScore:
             )
         return result
 
+    def basket_scores(self) -> dict[str, BasketScore]:
+        """Equal-weight, target-weight, long-only and avoid baskets."""
+        scored = self.scored()
+        if not scored:
+            return {}
+
+        def make(label: str, rows: list[ScoreRow], weighted: bool) -> BasketScore | None:
+            if not rows:
+                return None
+            weights = [
+                (r.target_weight if r.target_weight is not None else rating_weight(r.rating))
+                if weighted else 1.0
+                for r in rows
+            ]
+            total = sum(weights)
+            if total <= 0:
+                return None
+
+            def mean(attribute: str) -> float:
+                pairs = [
+                    (weight, getattr(row, attribute))
+                    for weight, row in zip(weights, rows, strict=True)
+                    if getattr(row, attribute) is not None
+                ]
+                if not pairs:
+                    return 0.0
+                return sum(weight * value for weight, value in pairs) / sum(
+                    weight for weight, _ in pairs
+                )
+
+            return BasketScore(
+                label=label,
+                n=len(rows),
+                weight=total,
+                mean_raw=mean("raw"),
+                mean_alpha=mean("alpha"),
+                mean_net=mean("net_alpha"),
+            )
+
+        long_rows = [r for r in scored if r.rating in ("Buy", "Overweight", "Hold")]
+        avoid_rows = [r for r in scored if r.rating in ("Underweight", "Sell")]
+        baskets = {
+            "equal": make("Equal-weight", scored, False),
+            "target": make("Target-weight", scored, True),
+            "long": make("Long-only (Buy/Overweight/Hold)", long_rows, False),
+            "avoid": make("Avoid (Underweight/Sell)", avoid_rows, False),
+        }
+        return {key: value for key, value in baskets.items() if value is not None}
+
 
 @dataclass
 class CostSummary:
@@ -116,6 +184,7 @@ class PerformanceReport:
     costs: CostSummary
     gate: str
     gate_detail: str
+    trend_overlay: bool = False
     broker: dict | None = None
 
     def as_dict(self) -> dict:
@@ -124,6 +193,7 @@ class PerformanceReport:
         return {
             "as_of": self.as_of,
             "memory_log": self.memory_log,
+            "trend_overlay": self.trend_overlay,
             "windows": [
                 {
                     "holding_days": w.holding_days,
@@ -132,6 +202,7 @@ class PerformanceReport:
                     "errors": w.errors,
                     "unscored": w.unscored,
                     "by_rating": {k: asdict(v) for k, v in w.by_rating().items()},
+                    "baskets": {k: asdict(v) for k, v in w.basket_scores().items()},
                     "rows": [asdict(r) for r in w.rows],
                 }
                 for w in self.windows
@@ -148,6 +219,7 @@ class PerformanceReport:
             "",
             f"- As of: {self.as_of}",
             f"- Memory log: {self.memory_log}",
+            f"- Trend overlay: {'on' if self.trend_overlay else 'off'}",
             "",
         ]
         for window in self.windows:
@@ -181,6 +253,24 @@ class PerformanceReport:
                     f"{score.mean_alpha:+.2%} | {score.mean_net:+.2%} | {hit} |"
                 )
             lines.append("")
+            baskets = window.basket_scores()
+            equal = baskets.get("equal")
+            if baskets:
+                lines.extend([
+                    "| Basket | n | weight | mean alpha | net of costs | vs equal |",
+                    "|---|---:|---:|---:|---:|---:|",
+                ])
+                for key in ("equal", "target", "long", "avoid"):
+                    basket = baskets.get(key)
+                    if basket is None:
+                        continue
+                    vs_equal = basket.mean_net - equal.mean_net if equal else 0.0
+                    lines.append(
+                        f"| {basket.label} | {basket.n} | {basket.weight:.2f} | "
+                        f"{basket.mean_alpha:+.2%} | {basket.mean_net:+.2%} | "
+                        f"{vs_equal:+.2%} |"
+                    )
+                lines.append("")
 
         lines.extend(["## Gate", f"**{self.gate}** — {self.gate_detail}", ""])
         costs = self.costs
@@ -304,16 +394,29 @@ def score_window(
     holding_days: int,
     config: dict,
     costs: CostSummary,
+    trend_cache: dict[tuple[str, str], TrendState] | None = None,
 ) -> WindowScore:
-    """Score every entry forward by ``holding_days`` trading days."""
+    """Score every entry forward by ``holding_days`` trading days.
+
+    When ``trend_cache`` is supplied, the logged rating is passed through the
+    deterministic trend overlay and the adjusted rating is used for the basket.
+    """
     window = WindowScore(holding_days)
     for entry in entries:
-        rating = str(entry.get("rating") or RATING_REVIEW)
-        if rating == RATING_REVIEW:
+        original_rating = str(entry.get("rating") or RATING_REVIEW)
+        if original_rating == RATING_REVIEW:
             window.unscored += 1
             continue
         ticker = str(entry["ticker"])
         date = str(entry["date"])
+        trend = trend_cache.get((ticker, date)) if trend_cache is not None else None
+        rating = apply_trend_overlay(original_rating, trend)
+        target_weight = rating_weight(rating)
+        extra = {
+            "original_rating": original_rating,
+            "trend": trend.state if trend is not None else None,
+            "target_weight": target_weight,
+        }
         if not entry.get("pending") and _holding_days(entry.get("holding")) == holding_days:
             raw = _pct(entry.get("raw"))
             alpha = _pct(entry.get("alpha"))
@@ -321,7 +424,7 @@ def score_window(
                 window.rows.append(ScoreRow(
                     ticker, date, rating, raw, alpha,
                     _net_alpha(alpha, ticker, date, costs),
-                    entry.get("resolved"), "log",
+                    entry.get("resolved"), "log", None, **extra,
                 ))
                 continue
         try:
@@ -330,47 +433,66 @@ def score_window(
                 ticker, date, holding_days, benchmark=benchmark
             )
         except Exception as exc:  # a price outage must not hide the other rows
-            window.rows.append(ScoreRow(ticker, date, rating, source="error", error=str(exc)))
+            window.rows.append(ScoreRow(
+                ticker, date, rating, source="error", error=str(exc), **extra
+            ))
             window.errors += 1
             continue
         if raw is None or alpha is None:
-            window.rows.append(ScoreRow(ticker, date, rating, source="pending"))
+            window.rows.append(ScoreRow(ticker, date, rating, source="pending", **extra))
             window.pending += 1
             continue
         window.rows.append(ScoreRow(
             ticker, date, rating, raw, alpha,
             _net_alpha(alpha, ticker, date, costs),
-            resolution, "prices",
+            resolution, "prices", None, **extra,
         ))
     return window
 
 
 def evaluate_gate(windows: list[WindowScore]) -> tuple[str, str]:
-    """The measurement gate: 30 directional decisions at both 5 and 20 days."""
+    """The measurement gate: 30 directional decisions at 5 and 20 days.
+
+    A pass needs the target-weight basket to beat the equal-weight basket and
+    be positive net of costs at both horizons, with a direction hit >= 50%.
+    """
     by_days = {window.holding_days: window for window in windows}
-    five = by_days.get(5).directional() if by_days.get(5) else []
-    twenty = by_days.get(20).directional() if by_days.get(20) else []
-    if len(five) < _GATE_DECISIONS or len(twenty) < _GATE_DECISIONS:
+    five = by_days.get(5)
+    twenty = by_days.get(20)
+    directional_5 = five.directional() if five else []
+    directional_20 = twenty.directional() if twenty else []
+    if len(directional_5) < _GATE_DECISIONS or len(directional_20) < _GATE_DECISIONS:
         return "INSUFFICIENT DATA", (
-            f"5-day directional decisions {len(five)}/{_GATE_DECISIONS}; "
-            f"20-day {len(twenty)}/{_GATE_DECISIONS}. Keep the measurement phase running."
+            f"5-day directional decisions {len(directional_5)}/{_GATE_DECISIONS}; "
+            f"20-day {len(directional_20)}/{_GATE_DECISIONS}. Keep the measurement phase running."
         )
 
-    def mean_net(rows: list[ScoreRow]) -> float:
-        values = [row.net_alpha for row in rows if row.net_alpha is not None]
-        return fmean(values) if values else 0.0
+    def basket(window: WindowScore | None, key: str) -> BasketScore:
+        scores = window.basket_scores() if window else {}
+        return scores.get(key) or BasketScore("missing", 0, 0.0, 0.0, 0.0, 0.0)
+
+    target_5, equal_5 = basket(five, "target"), basket(five, "equal")
+    target_20, equal_20 = basket(twenty, "target"), basket(twenty, "equal")
 
     def hit_rate(rows: list[ScoreRow]) -> float:
         return sum(
             1 for row in rows if (row.alpha > 0) == (_DIRECTION[row.rating] > 0)
         ) / len(rows)
 
-    net_5, net_20, hit_5 = mean_net(five), mean_net(twenty), hit_rate(five)
+    hit_5 = hit_rate(directional_5)
     detail = (
-        f"5-day net alpha {net_5:+.2%}; 20-day net alpha {net_20:+.2%}; "
-        f"5-day direction hit {hit_5:.0%}. Need both net alpha values > 0 and hit >= 50%."
+        f"5-day target-weight net {target_5.mean_net:+.2%} vs equal-weight "
+        f"{equal_5.mean_net:+.2%}; 20-day target-weight net {target_20.mean_net:+.2%} "
+        f"vs equal-weight {equal_20.mean_net:+.2%}; 5-day direction hit {hit_5:.0%}. "
+        "Need target > equal and > 0 at both horizons, and hit >= 50%."
     )
-    if net_5 <= 0 or net_20 <= 0 or hit_5 < 0.5:
+    if (
+        target_5.mean_net <= 0
+        or target_20.mean_net <= 0
+        or target_5.mean_net < equal_5.mean_net
+        or target_20.mean_net < equal_20.mean_net
+        or hit_5 < 0.5
+    ):
         return "FAIL", detail
     return "PASS", detail
 
@@ -458,12 +580,23 @@ def build_report(
     holding_days: tuple[int, ...] = (1, 5, 20),
     position_value: float | None = None,
     broker: bool = False,
+    trend_overlay: bool = False,
 ) -> PerformanceReport:
     """Build the live scoreboard from the memory log and the cost ledger."""
     log = TradingMemoryLog(config)
     entries = log.load_entries()
     costs = scan_costs(config, entries, position_value)
-    windows = [score_window(entries, days, config, costs) for days in holding_days]
+    trend_cache = None
+    if trend_overlay:
+        trend_cache = {}
+        for entry in entries:
+            key = (str(entry["ticker"]), str(entry["date"]))
+            if key not in trend_cache:
+                trend_cache[key] = trend_state(key[0], key[1], config)
+    windows = [
+        score_window(entries, days, config, costs, trend_cache=trend_cache)
+        for days in holding_days
+    ]
     gate, detail = evaluate_gate(windows)
     return PerformanceReport(
         as_of=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
@@ -472,5 +605,6 @@ def build_report(
         costs=costs,
         gate=gate,
         gate_detail=detail,
+        trend_overlay=trend_overlay,
         broker=scan_broker(config) if broker else None,
     )

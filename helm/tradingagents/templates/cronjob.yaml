@@ -57,7 +57,7 @@ spec:
                   done
                   # Measurement, not trading: refresh the forward scoreboard and
                   # the broker snapshot even if an analysis failed.
-                  tradingagents performance --save --broker || true
+                  tradingagents performance --trend-overlay --save --broker || true
                   exit $status
               envFrom:
                 - configMapRef:

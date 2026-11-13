@@ -600,6 +600,7 @@ def test_executor_uses_the_portfolio_managers_typed_execution(tmp_path, monkeypa
     """The PM is the final decision; its levels and trade_now gate the order,
     not the Trader proposal that the debate may have overruled."""
     from cli import run
+    from tradingagents.trend import TrendState
 
     captured = {}
 
@@ -607,6 +608,12 @@ def test_executor_uses_the_portfolio_managers_typed_execution(tmp_path, monkeypa
         captured.update(kwargs)
         return {"status": "submitted"}
 
+    monkeypatch.setattr(
+        run, "trend_state",
+        lambda *args, **kwargs: TrendState(
+            "AAPL", "2026-01-01", 100.0, 99.0, 98.0, 0.01, 0.02, "up"
+        ),
+    )
     monkeypatch.setattr(run, "execute_trade", fake_execute)
     result = run._execute_trading212(
         {
@@ -640,8 +647,15 @@ def test_executor_uses_the_portfolio_managers_typed_execution(tmp_path, monkeypa
 @pytest.mark.unit
 def test_executor_places_nothing_when_the_pm_says_wait(monkeypatch):
     from cli import run
+    from tradingagents.trend import TrendState
 
     called = []
+    monkeypatch.setattr(
+        run, "trend_state",
+        lambda *args, **kwargs: TrendState(
+            "AAPL", "2026-01-01", 100.0, 99.0, 98.0, 0.01, 0.02, "up"
+        ),
+    )
     monkeypatch.setattr(run, "execute_trade", lambda **kwargs: called.append(kwargs))
     result = run._execute_trading212(
         {"trade_mode": "practice"},
@@ -654,6 +668,62 @@ def test_executor_places_nothing_when_the_pm_says_wait(monkeypatch):
 
     assert result["status"] == "skipped"
     assert "wait" in result["reason"].lower()
+    assert called == []
+
+
+@pytest.mark.unit
+def test_executor_skips_a_buy_against_a_downtrend(monkeypatch):
+    from cli import run
+    from tradingagents.trend import TrendState
+
+    called = []
+    monkeypatch.setattr(
+        run, "trend_state",
+        lambda *args, **kwargs: TrendState(
+            "AAPL", "2026-01-01", 90.0, 99.0, 98.0, -0.02, -0.03, "down"
+        ),
+    )
+    monkeypatch.setattr(run, "execute_trade", lambda **kwargs: called.append(kwargs))
+    result = run._execute_trading212(
+        {"trade_mode": "practice"},
+        {"asset_type": "stock", "ticker": "AAPL", "analysis_date": "2026-01-01"},
+        {
+            "final_rating": "Buy",
+            "final_execution": {"trade_now": True, "limit_price": 105, "entry_price": 100},
+        },
+    )
+
+    assert result["status"] == "skipped"
+    assert "Trend overlay" in result["reason"]
+    assert result["adjusted_rating"] == "Underweight"
+    assert called == []
+
+
+@pytest.mark.unit
+def test_executor_skips_a_sell_against_an_uptrend(monkeypatch):
+    from cli import run
+    from tradingagents.trend import TrendState
+
+    called = []
+    monkeypatch.setattr(
+        run, "trend_state",
+        lambda *args, **kwargs: TrendState(
+            "AAPL", "2026-01-01", 110.0, 99.0, 98.0, 0.02, 0.03, "up"
+        ),
+    )
+    monkeypatch.setattr(run, "execute_trade", lambda **kwargs: called.append(kwargs))
+    result = run._execute_trading212(
+        {"trade_mode": "practice"},
+        {"asset_type": "stock", "ticker": "AAPL", "analysis_date": "2026-01-01"},
+        {
+            "final_rating": "Sell",
+            "final_execution": {"trade_now": True, "order_type": "market"},
+        },
+    )
+
+    assert result["status"] == "skipped"
+    assert "Trend overlay" in result["reason"]
+    assert result["adjusted_rating"] == "Hold"
     assert called == []
 
 

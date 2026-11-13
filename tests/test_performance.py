@@ -48,6 +48,22 @@ def _window(days, count, *, rating="Overweight", alpha=0.01, net=0.003):
     return WindowScore(days, rows=rows)
 
 
+def _mixed_window(days, count=30):
+    rows = []
+    for index in range(count):
+        if index < count // 2:
+            rows.append(ScoreRow(
+                "AAPL", "2026-01-01", "Overweight", 0.02, 0.02, 0.013,
+                target_weight=1.25,
+            ))
+        else:
+            rows.append(ScoreRow(
+                "MSFT", "2026-01-01", "Underweight", -0.01, -0.01, -0.017,
+                target_weight=0.5,
+            ))
+    return WindowScore(days, rows=rows)
+
+
 @pytest.mark.unit
 def test_score_window_uses_the_stored_outcome_and_fetches_the_rest(monkeypatch):
     entries = [
@@ -121,10 +137,57 @@ def test_gate_fails_on_negative_net_or_less_than_half_the_directions():
 
 
 @pytest.mark.unit
-def test_gate_passes_with_positive_net_and_a_direction_hit():
-    gate, detail = evaluate_gate([_window(5, 30), _window(20, 30)])
+def test_gate_passes_when_target_beats_equal_with_a_direction_hit():
+    gate, detail = evaluate_gate([_mixed_window(5), _mixed_window(20)])
     assert gate == "PASS"
-    assert "net alpha" in detail
+    assert "target-weight" in detail and "equal-weight" in detail
+
+
+@pytest.mark.unit
+def test_basket_scores_compare_equal_target_long_and_avoid():
+    window = WindowScore(5, rows=[
+        ScoreRow("BATS.L", "2026-11-04", "Overweight", -0.024, -0.032, -0.0405, target_weight=1.25),
+        ScoreRow("BP.L", "2026-11-04", "Overweight", -0.001, -0.008, -0.0165, target_weight=1.25),
+        ScoreRow("LLOY.L", "2026-11-04", "Overweight", 0.014, 0.006, -0.0025, target_weight=1.25),
+        ScoreRow("SHEL.L", "2026-11-04", "Hold", -0.031, -0.039, -0.0475, target_weight=1.0),
+        ScoreRow("ULVR.L", "2026-11-04", "Hold", -0.020, -0.028, -0.0365, target_weight=1.0),
+        ScoreRow("AZN.L", "2026-11-04", "Underweight", -0.008, -0.015, -0.0235, target_weight=0.5),
+        ScoreRow("GSK.L", "2026-11-04", "Underweight", 0.006, -0.002, -0.0105, target_weight=0.5),
+        ScoreRow("HSBA.L", "2026-11-04", "Underweight", 0.036, 0.028, 0.0195, target_weight=0.5),
+        ScoreRow("RIO.L", "2026-11-04", "Underweight", 0.009, 0.001, -0.0075, target_weight=0.5),
+        ScoreRow("RR.L", "2026-11-04", "Underweight", 0.105, 0.097, 0.0885, target_weight=0.5),
+    ])
+    baskets = window.basket_scores()
+
+    assert baskets["equal"].mean_alpha == pytest.approx(0.0008)
+    assert baskets["target"].mean_alpha < baskets["equal"].mean_alpha
+    assert baskets["long"].n == 5
+    assert baskets["avoid"].n == 5
+
+
+@pytest.mark.unit
+def test_score_window_applies_the_trend_overlay_and_target_weight(monkeypatch):
+    from tradingagents.trend import TrendState
+
+    entry = {
+        "ticker": "AAPL", "date": "2026-01-01", "rating": "Buy",
+        "pending": True,
+    }
+    monkeypatch.setattr(
+        "tradingagents.performance.fetch_returns",
+        lambda *args, **kwargs: (0.01, 0.02, 5, "2026-01-08"),
+    )
+    trend = TrendState("AAPL", "2026-01-01", 100.0, 99.0, 98.0, -0.01, -0.02, "down")
+    window = score_window(
+        [entry], 5, {"benchmark_map": {"": "SPY"}}, _costs(),
+        trend_cache={("AAPL", "2026-01-01"): trend},
+    )
+
+    row = window.scored()[0]
+    assert row.original_rating == "Buy"
+    assert row.rating == "Underweight"
+    assert row.trend == "down"
+    assert row.target_weight == 0.5
 
 
 @pytest.mark.unit
@@ -212,19 +275,23 @@ def test_performance_command_prints_json_and_saves_the_report(tmp_path, monkeypa
     )
     seen = {}
 
-    def fake_build(config, windows, position_value=None, broker=False):
-        seen.update(config=config, windows=windows, position_value=position_value, broker=broker)
+    def fake_build(config, windows, position_value=None, broker=False, trend_overlay=False):
+        seen.update(
+            config=config, windows=windows, position_value=position_value,
+            broker=broker, trend_overlay=trend_overlay,
+        )
         return report
 
     monkeypatch.setattr(cli_main, "build_report", fake_build)
     result = CliRunner().invoke(cli_main.app, [
-        "performance", "--json", "--memory-log", str(tmp_path / "memory.md"),
+        "performance", "--json", "--trend-overlay", "--memory-log", str(tmp_path / "memory.md"),
         "--results-dir", str(tmp_path), "--save",
     ])
 
     assert result.exit_code == 0, result.output
     assert "INSUFFICIENT DATA" in result.output
     assert seen["windows"] == (1, 5, 20)
+    assert seen["trend_overlay"] is True
     assert seen["config"]["memory_log_path"] == str(tmp_path / "memory.md")
     assert seen["config"]["results_dir"] == str(tmp_path)
     assert (tmp_path / "performance.md").is_file()

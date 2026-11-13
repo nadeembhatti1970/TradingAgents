@@ -38,6 +38,7 @@ from tradingagents.graph.analyst_execution import (
     build_analyst_execution_plan,
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.trend import apply_trend_overlay, trend_state
 
 
 def _run_directory(config: dict, ticker: str, trade_date: str) -> Path:
@@ -501,7 +502,23 @@ def _execute_trading212(config: dict, selections: dict, final_state: dict):
             "status": "skipped",
             "reason": "Trading 212 execution is only enabled for stocks.",
         }
-    action = action_for_rating(final_state.get("final_rating", ""))
+    final_rating = final_state.get("final_rating", "")
+    trend = trend_state(selections["ticker"], selections["analysis_date"], config)
+    adjusted_rating = apply_trend_overlay(final_rating, trend)
+    original_action = action_for_rating(final_rating)
+    adjusted_action = action_for_rating(adjusted_rating)
+    if adjusted_action != original_action:
+        return {
+            "status": "skipped",
+            "reason": (
+                f"Trend overlay: {final_rating} -> {adjusted_rating}; no order was submitted. "
+                "A buy is not taken below the 200-day/50-day and an avoid is not sold above the trend."
+            ),
+            "trend": trend.render(),
+            "original_rating": final_rating,
+            "adjusted_rating": adjusted_rating,
+        }
+    action = adjusted_action
     if action is None:
         return {"status": "skipped", "reason": "The final decision is Hold or has no trade action."}
 
